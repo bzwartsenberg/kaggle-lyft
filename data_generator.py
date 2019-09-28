@@ -13,6 +13,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from pathlib import Path
 from utils import decode_predictionstring, get_points_in_a_rotated_box
+import os
+
 
 # Load the SDK
 from lyft_dataset_sdk.lyftdataset import LyftDataset, LyftDatasetExplorer, Quaternion, view_points
