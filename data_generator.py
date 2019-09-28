@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 from pathlib import Path
-from utils import decode_predictionstring, get_points_in_a_rotated_box
+from util_funcs import decode_predictionstring, get_points_in_a_rotated_box
 import os
 
 
