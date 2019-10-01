@@ -76,7 +76,7 @@ class data_generator():
         
         #params for output maps:
         self.output_scale = 4
-        self.o_delta = self.delta/self.output_scale
+        self.o_delta = self.delta*self.output_scale
         
         #output features: x,y,z,dx,dy,dz,cos(th),sin(th),n_classes        
         self.o_shape = tuple(map(int, [(self.xlim[1]-self.xlim[0])/self.o_delta, (self.ylim[1]-self.ylim[0])/self.o_delta, 8 + self.n_classes])) 
@@ -90,7 +90,34 @@ class data_generator():
         self.o_yaxis = (self.o_yaxis_lim[1:] + self.o_yaxis_lim[:-1])/2
         self.o_zaxis = (self.o_zaxis_lim[1:] + self.o_zaxis_lim[:-1])/2
         
+    def scale_to_bin(self, pts, as_int = True):
         
+        pts_bin = (pts - np.array([[self.xlim[0],self.ylim[0]]]))/np.array([[self.delta,self.delta]])
+        
+        if as_int:
+            pts_bin = pts_bin.astype('int')
+            
+        return pts_bin
+
+    def o_scale_to_bin(self, pts, as_int = True):
+        
+        pts_bin = (pts - np.array([[self.xlim[0],self.ylim[0]]]))/np.array([[self.o_delta,self.o_delta]])
+        
+        if as_int:
+            pts_bin = pts_bin.astype('int')
+            
+        return pts_bin
+        
+    def bin_to_scale(self, bins):
+        
+        return bins*np.array([[self.delta,self.delta]]) + np.array([[self.xlim[0],self.ylim[0]]])
+        
+
+    def o_bin_to_scale(self, bins):
+        
+        return bins*np.array([[self.o_delta,self.o_delta]]) + np.array([[self.xlim[0],self.ylim[0]]])
+        
+    
 
     def get_lidar_BEV(self,sample_token):
         """Get a lidar feature map
@@ -157,19 +184,17 @@ class data_generator():
         
         corners = self.get_corners(df_row)
     
-        print('Got corners', corners)
         
-        corner_bins = np.zeros_like(corners).astype('int')
-        
-        #edge case: what if half falls outside the limit? --> it will cut off to n+1 or 0
-        corner_bins[:,0] = np.digitize(corners[:,0], self.o_xaxis_lim)
-        corner_bins[:,1] = np.digitize(corners[:,1], self.o_yaxis_lim)
-        print('with bins', corner_bins)
-    
+        corner_bins = self.o_scale_to_bin(corners, as_int = True)
                 
-        points = get_points_in_a_rotated_box(corner_bins, array.shape[0:2])
+        points = get_points_in_a_rotated_box(corner_bins)
         
-        for p in points:
+        usepts = np.argwhere((points[:,0] >= 0) &
+                    (points[:,0] < self.o_shape[0]) &
+                    (points[:,1] >= 0) &
+                    (points[:,1] < self.o_shape[1])).flatten()
+        
+        for p in points[usepts]:
             metric_x, metric_y = self.o_xaxis[p[0]],self.o_yaxis[p[1]]
             
             reg_target = np.array(df_row[['x','y','z','logdx','logdy','logdz','cos','sin']]) #x,y,z,dx,dy,dz,cos(th),sin(th),n_classes
@@ -218,7 +243,6 @@ class data_generator():
     
         for i in range(df_a.shape[0]):
             
-            print('Now working on', df_a.iloc[i][['x','y']])
     
             self.update_label_map(df_a.iloc[i], output_map)
     
