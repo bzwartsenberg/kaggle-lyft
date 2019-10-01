@@ -7,12 +7,12 @@ Created on Sat Sep 28 14:38:31 2019
 """
 
 
-from keras.layers import Conv2D,Conv2DTranspose, BatchNormalization, Input, add, ReLU
+from keras.layers import Conv2D,Conv2DTranspose, BatchNormalization, Input, add, ReLU, Concatenate
 
 from keras.models import Model
 
-
-
+from keras.losses import logcosh, categorical_crossentropy, binary_crossentropy
+import keras.backend as K
     
     
     
@@ -121,11 +121,16 @@ def make_cls_head(x, n_classes):
 
     kernel_initializer = 'glorot_uniform'
     
+    if n_classes == 1:
+        activation = 'sigmoid'
+    else:
+        activation = 'softmax'
+    
     cls_pred = Conv2D(n_classes, 
                kernel_size = (3,3), 
                strides=(1,1), padding = 'same', 
                kernel_initializer = kernel_initializer,
-               activation = 'softmax',
+               activation = activation,
                name='class_output')(x)    
     
     return cls_pred
@@ -172,7 +177,67 @@ def make_header(x, n_classes, use_bn = False):
     reg = make_reg_head(x)
 
     return cls_pred, reg
+
+
+def get_loss(n_classes, cls_weight):
     
+    #Note: need to see if this is right for image data with cat. crossent.
+    if n_classes == 1:
+        crossentropy = binary_crossentropy
+    else:
+        crossentropy = categorical_crossentropy
+    
+    size_reg = [-1,-1,-1,8]
+    start_reg = [0,0,0,0]
+
+    size_cls = [-1,-1,-1,n_classes]
+    start_cls = [0,0,0,8]
+    
+    def cls_loss(y_true, y_pred):
+
+        cls_true = K.slice(y_true, start_cls, size_cls)
+        cls_pred = K.slice(y_pred, start_cls, size_cls)
+        
+        cls_loss = crossentropy(cls_true, cls_pred)
+        
+        return cls_loss        
+        
+    def reg_loss(y_true, y_pred):
+        
+        reg_true = K.slice(y_true, start_reg, size_reg)
+        reg_pred = K.slice(y_pred, start_reg, size_reg)
+
+        cls_true = K.slice(y_true, start_cls, size_cls)
+                
+        reg_mask = K.sum(cls_true, axis = -1, keepdims = True)
+        
+        reg_loss = logcosh(reg_true, reg_mask*reg_pred)    
+        
+        return reg_loss
+    
+    
+    def loss(y_true, y_pred):
+        
+        #y[:,:,0:8] is reg
+        #y[:,:,8:]  is classes
+
+        reg_true = K.slice(y_true, start_reg, size_reg)
+        reg_pred = K.slice(y_pred, start_reg, size_reg)
+
+        cls_true = K.slice(y_true, start_cls, size_cls)
+        cls_pred = K.slice(y_pred, start_cls, size_cls)
+        
+        
+        cls_loss = crossentropy(cls_true, cls_pred)
+        
+        reg_mask = K.sum(cls_true, axis = -1, keepdims = True)
+        
+        reg_loss = logcosh(reg_true, reg_mask*reg_pred)
+        
+        return reg_loss + cls_weight*cls_loss
+    
+    return loss, cls_loss, reg_loss
+
 
 
 
@@ -189,26 +254,30 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
     
     cls_pred, reg = make_header(p4, n_classes, use_bn = use_bn)
     
-    return inp, cls_pred, reg
+    out = Concatenate(axis=-1)([reg, cls_pred])
+    
+    return inp, out
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4):
+    
+def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1.):
     
     
-    inp, cls_pred, reg = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
+    inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
     
-    model = Model(inp,[cls_pred,reg])
+    model = Model(inp,out)
     
     #note: need to update this to a more appropriate lossfunction:
     # basically the regression loss is calculated where the category is non-zero, so only where an object is
     
+    loss, cls_loss, reg_loss =  get_loss(n_classes, cls_weight)
+    
     model.compile(
                   optimizer='adam',
-                  loss={'class_output': 'categorical_crossentropy', 'reg_output': 'logcosh'},
-                  loss_weights={'class_output': 1., 'reg_output': 1.})
+                  loss=loss,
+                metrics = [cls_loss, reg_loss])
     
     return model
-    
 
 
 ## THere is backbone, which consists of a bottleneck
