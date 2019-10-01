@@ -20,9 +20,29 @@ from lyft_dataset_sdk.lyftdataset import LyftDataset, LyftDatasetExplorer, Quate
 from lyft_dataset_sdk.utils.data_classes import LidarPointCloud, Box
 from lyft_dataset_sdk.utils.geometry_utils import view_points, transform_matrix
 
-
+from scipy.sparse import csr_matrix
 
 from keras.utils import Sequence
+
+class sparse_3D():
+    
+    def __init__(self, dense):
+        """Create along last axis"""
+        
+        self.shape = dense.shape
+        self.data = [csr_matrix(dense[:,:,i]) for i in range(dense.shape[2])]
+        
+        
+    def todense(self, arr = None):
+        
+        if arr is None:
+            arr = np.empty(self.shape)
+            
+        assert arr.shape == self.shape
+        
+        for i in range(self.shape[2]):
+            arr[:,:,i] = self.data[i].todense()
+
 
 class data_generator():
     
@@ -253,6 +273,19 @@ class data_generator():
             self.update_label_map(df_a.iloc[i], output_map)
     
         return output_map
+    
+    
+    def get_sparse_output(self, i):
+        
+        output_map = self.get_output_map(self.train['Id'][i], self.train['PredictionString'][i])
+        
+        return sparse_3D(output_map)
+    
+    def get_sparse_input(self, i):
+        
+        input_map = self.get_lidar_BEV(self.train['Id'][i])
+        
+        return sparse_3D(input_map)
     
     
 class keras_generator(Sequence):
