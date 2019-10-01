@@ -189,30 +189,28 @@ class data_generator():
         
         corner_bins = self.o_scale_to_bin(corners, as_int = True)
         
-        if ((np.unique(corner_bins, axis = 0).shape[0] == 4) and 
-            (np.unique(corner_bins[:,0]).shape[0] > 2) and
-            (np.unique(corner_bins[:,1]).shape[0] > 2)): #only update if 4 separate points, and if there are more than 2 different x/y points
-                    
+        try:
             points = get_points_in_a_rotated_box(corner_bins)
+        except ValueError:
+            points = np.array([[-1,-1]])
             
-            usepts = np.argwhere((points[:,0] >= 0) &
-                        (points[:,0] < self.o_shape[0]) &
-                        (points[:,1] >= 0) &
-                        (points[:,1] < self.o_shape[1])).flatten()
-            
-            for p in points[usepts]:
-                metric_x, metric_y = self.o_xaxis[p[0]],self.o_yaxis[p[1]]
-                
-                reg_target = np.array(df_row[['x','y','z','logdx','logdy','logdz','cos','sin']]) #x,y,z,dx,dy,dz,cos(th),sin(th),n_classes
-                reg_target[0] -= metric_x
-                reg_target[1] -= metric_y
-                
-                class_target = np.zeros(self.n_classes)
-                class_target[df_row['cat_num']] = 1.
-                array[p[0],p[1],0:8] = reg_target
-                array[p[0],p[1],8:] = class_target
-        else:
-            print('ping') 
+        usepts = np.argwhere((points[:,0] >= 0) &
+                    (points[:,0] < self.o_shape[0]) &
+                    (points[:,1] >= 0) &
+                    (points[:,1] < self.o_shape[1])).flatten()
+
+        for p in points[usepts]:
+            metric_x, metric_y = self.o_xaxis[p[0]],self.o_yaxis[p[1]]
+
+            reg_target = np.array(df_row[['x','y','z','logdx','logdy','logdz','cos','sin']]) #x,y,z,dx,dy,dz,cos(th),sin(th),n_classes
+            reg_target[0] -= metric_x
+            reg_target[1] -= metric_y
+
+            class_target = np.zeros(self.n_classes)
+            class_target[df_row['cat_num']] = 1.
+            array[p[0],p[1],0:8] = reg_target
+            array[p[0],p[1],8:] = class_target
+
     
     
     def get_output_map(self,sample_token, pred_str):
