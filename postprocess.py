@@ -80,13 +80,83 @@ class RotatedBox():
         
         return self.intersect(box)/self.union(box)
     
-    def get_pred_str(self):
+    def get_array(self):
+	
+		return np.array([self.x, self.y, self.z, self.dx, self.dy, self.dz, self.th])
+		
+	def get_obj(self)
+		return self.objstr
+		
         
-        pred_str = '{} {} {} {} {} {} {} {}'.format(self.score, self.x, self.y, self.z, self.dx, self.dy, self.dz, self.objstr)
-        
-        
-        return pred_str
 
+
+class PostProcessor():
+
+    def __init__(self, model, data_generator, test, config = {}):
+        
+        self.gen = data_generator
+        self.test = test
+        self.model = model
+		
+		self.nms_iou_threshold = config['nms_iou_threshold'] if 'nms_iou_threshold' in config else 0.3
+		self.cls_threshold = config['cls_threshold'] if 'cls_threshold' in config else 0.8
+		
+
+	def df_to_pred_str(self, df):
+		
+		cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
+		
+		pred_str_list = ['{} {} {} {} {} {} {} {} {}'.format(*row.loc[i][cols]) for i in range(df.shape[0])]
+	
+		return ' '.join(pred_str_list)
+		
+	def analyze_val_idx(self, idx):
+	
+		Id, true_predstr = self.gen.train['Id'][idx], self.gen.train['PredictionString'][idx]
+		
+		df = self.analyze_sample(Id)
+		
+		predicted_string = Id + ' ' + self.df_to_pred_str(df)
+		
+		return df, predicted_string, true_predstr
+		
+		
+	def analyze_sample(self, sample_id):
+	
+		X = np.expand_dims(self.gen.get_lidar_BEV(self,sample_token),0)
+		
+		y_pred = self.model.predict(X)
+		
+		picked_box_objs, picked_scores = filter_pred(y_pred[0], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
+		
+		picked_objstrs = np.array([obj.get_obj() for obj in picked_box_objs])
+		picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
+		
+        df = pd.DataFrame(picked_pos_array)
+        df.columns = ['x','y','z','dy','dx','dz','yaw']
+        df['cat'] = picked_objstrs
+        df['scores'] = picked_scores
+
+		
+		#translate and rotate:
+
+        sample = self.lyftdata.get('sample', sample_token)
+        lidar_top = self.lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
+        ego_pose = self.lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
+    	
+        qt = Quaternion(ego_pose["rotation"])
+	
+		df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
+
+		df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
+	
+        df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
+		
+		return df
+	
+
+
+	
 
 def convert_to_box_objs(pred_array):
     """
@@ -194,155 +264,6 @@ def make_prediction_string(box_objs):
     return pred_str[:-1]
     
 
-class geometry():
-
-    def __init__(self):      
-
-        #params for input maps:
-        self.xlim = (-102.4,102.4)
-        self.ylim = (-51.2,51.2)
-        self.delta = 0.2
-        self.zlim = (0,3)
-        self.delta_z = 0.5
-        
-        #no intensity, so no extra channels
-        #may want to have an extra channel for the roadmap that lyft provides
-        self.shape = tuple(map(int, [(self.xlim[1]-self.xlim[0])/self.delta, (self.ylim[1]-self.ylim[0])/self.delta, (self.zlim[1]-self.zlim[0])/self.delta_z])) 
-        
-        #limits for pixels (size shape + 1)
-        self.xaxis_lim = np.linspace(*self.xlim, self.shape[0]+1)
-        self.yaxis_lim = np.linspace(*self.ylim, self.shape[1]+1)
-        self.zaxis_lim = np.linspace(*self.zlim, self.shape[2]+1)   
-        
-        self.xaxis = (self.xaxis_lim[1:] + self.xaxis_lim[:-1])/2
-        self.yaxis = (self.yaxis_lim[1:] + self.yaxis_lim[:-1])/2
-        self.zaxis = (self.zaxis_lim[1:] + self.zaxis_lim[:-1])/2
-                
-        
-        self.categories = ['car',
-                     'pedestrian',
-                     'animal',
-                     'other_vehicle',
-                     'bus',
-                     'motorcycle',
-                     'truck',
-                     'emergency_vehicle',
-                     'bicycle']
-    
-        #classes to use:
-        self.inc_classes = ['car']
-        self.n_classes = len(self.inc_classes)
-    
-        #classmap:
-        self.cat_to_num = {cat : i for i,cat in enumerate(self.inc_classes)}
-        #inverse:
-        self.num_to_cat = {v : k for k,v in self.cat_to_num.items()}
-        
-        #params for output maps:
-        self.output_scale = 4
-        self.o_delta = self.delta*self.output_scale
-        
-        #output features: x,y,z,dx,dy,dz,cos(th),sin(th),n_classes        
-        self.o_shape = tuple(map(int, [(self.xlim[1]-self.xlim[0])/self.o_delta, (self.ylim[1]-self.ylim[0])/self.o_delta, 8 + self.n_classes])) 
-        
-        
-        self.o_xaxis_lim = np.linspace(*self.xlim, self.o_shape[0]+1)
-        self.o_yaxis_lim = np.linspace(*self.ylim, self.o_shape[1]+1)
-        self.o_zaxis_lim = np.linspace(*self.zlim, self.o_shape[2]+1)   
-        
-        self.o_xaxis = (self.o_xaxis_lim[1:] + self.o_xaxis_lim[:-1])/2
-        self.o_yaxis = (self.o_yaxis_lim[1:] + self.o_yaxis_lim[:-1])/2
-        self.o_zaxis = (self.o_zaxis_lim[1:] + self.o_zaxis_lim[:-1])/2
-
-    def scale_to_bin(self, pts, as_int = True):
-        
-        pts_bin = (pts - np.array([[self.xlim[0],self.ylim[0]]]))/np.array([[self.delta,self.delta]])
-        
-        if as_int:
-            pts_bin = pts_bin.astype('int')
-            
-        return pts_bin
-
-    def o_scale_to_bin(self, pts, as_int = True):
-        
-        pts_bin = (pts - np.array([[self.xlim[0],self.ylim[0]]]))/np.array([[self.o_delta,self.o_delta]])
-        
-        if as_int:
-            pts_bin = pts_bin.astype('int')
-            
-        return pts_bin
-        
-    def bin_to_scale(self, bins):
-        
-        return bins*np.array([[self.delta,self.delta]]) + np.array([[self.xlim[0],self.ylim[0]]])
-        
-
-    def o_bin_to_scale(self, bins):
-        
-        return bins*np.array([[self.o_delta,self.o_delta]]) + np.array([[self.xlim[0],self.ylim[0]]])
-    
-    def get_corners(self, df_row):
-    
-        x,y,dx,dy,yaw = df_row[['x','y','dx','dy','yaw_cor']]
-    
-        
-        corners = np.array([[- dx/2, dy/2],
-                           [- dx/2,  -dy/2],
-                           [ dx/2,  -dy/2],
-                           [dx/2,   dy/2]], dtype=np.float32)
-        
-        rot = np.array([[np.cos(yaw), -np.sin(yaw)],
-                        [np.sin(yaw), np.cos(yaw)]],dtype = 'float32')
-        
-        corners = np.dot(rot, corners.T).T + np.array([[x,y]])
-        
-        return corners
-    
-    
-    def update_label_map(self, df_row, array):
-        #array_x and array_y should be array.shape[0]+1 and array.shape[1]+1 to be used with digitize
-        
-        corners = self.get_corners(df_row)
-    
-        
-        corner_bins = self.o_scale_to_bin(corners, as_int = True)
-        
-        try:
-            points = get_points_in_a_rotated_box(corner_bins)
-        except ValueError:
-            points = np.array([[-1,-1]])
-            
-        usepts = np.argwhere((points[:,0] >= 0) &
-                    (points[:,0] < self.o_shape[0]) &
-                    (points[:,1] >= 0) &
-                    (points[:,1] < self.o_shape[1])).flatten()
-
-        for p in points[usepts]:
-            array[p[0],p[1]] = 1.
-
-    
-    
-    def reconstruct_output_map(self, pred_str):
-
-        
-        pos, obj = decode_predictionstring(pred_str)
-    
-    
-        df = pd.DataFrame(pos)
-        df.columns = ['x','y','z','dy','dx','dz','yaw_cor']
-    
-    
-        output_map = np.zeros(self.o_shape[0:2])
-    
-        for i in range(df.shape[0]):
-            
-    
-            self.update_label_map(df.iloc[i], output_map)
-#        print('all else ', times[1] - times[0])
-#        print('For loop ', times[2] - times[1])
-        
-    
-        return output_map    
         
     
 def plot_Rotated_box(ax, rotated_box):
@@ -407,9 +328,9 @@ if __name__ == '__main__':
     
 #    
 #training: 
-#- continue training the model
+#x- continue training the model
 #- train from checkpoint
-#- remove al big code from colab, put in github and manage on gdrive
+#x- remove al big code from colab, put in github and manage on gdrive
 #
 #postprocessing:
 #- correct angles and offsets for predictions

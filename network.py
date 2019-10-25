@@ -14,7 +14,7 @@ from keras.models import Model
 from keras.losses import logcosh, categorical_crossentropy, binary_crossentropy
 import keras.backend as K
     
-    
+
     
 def block_1(x, use_bn = False):
     
