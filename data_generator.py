@@ -23,6 +23,7 @@ from lyft_dataset_sdk.utils.geometry_utils import view_points, transform_matrix
 from scipy.sparse import csr_matrix
 
 from keras.utils import Sequence
+import time
 
 class sparse_3D():
     
@@ -42,6 +43,7 @@ class sparse_3D():
         
         for i in range(self.shape[2]):
             arr[:,:,i] = self.data[i].todense()
+        return arr
 
 
 class data_generator():
@@ -151,7 +153,6 @@ class data_generator():
         
         sample = self.lyftdata.get('sample', sample_token)
     
-        
         #get lidar points:
         for sensor_name in sample['data'].keys():
             if 'LIDAR' in sensor_name:
@@ -162,22 +163,10 @@ class data_generator():
                 cs_record = self.lyftdata.get("calibrated_sensor", lidar["calibrated_sensor_token"])
                 pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
                 pc.translate(np.array(cs_record["translation"]))
-    
-                x_bins = np.digitize(pc.points[0], self.xaxis_lim)
-                y_bins = np.digitize(pc.points[1], self.yaxis_lim)
-                z_bins = np.digitize(pc.points[2], self.zaxis_lim)    
-    
-                usepts = np.argwhere((x_bins > 0) &
-                            (x_bins <= self.shape[0]) &
-                            (y_bins > 0) &
-                            (y_bins <= self.shape[1]) &
-                            (z_bins > 0) &
-                            (z_bins <= self.shape[2]))    
-    
-                #ugly for loop:
-                for pt in usepts:
-                    feature_map[x_bins[pt]-1,y_bins[pt]-1,z_bins[pt]-1] += 1.
-        
+
+                feature_map += np.histogramdd(pc.points[0:3].T, [self.xaxis_lim, self.yaxis_lim, self.zaxis_lim])[0]
+                    
+                        
         #bin points:
         return feature_map
     
@@ -234,6 +223,10 @@ class data_generator():
     
     
     def get_output_map(self,sample_token, pred_str):
+
+        times = []
+        times.append(time.time())
+        
         pos, obj = decode_predictionstring(pred_str)
     
     
@@ -266,11 +259,16 @@ class data_generator():
     
     
         output_map = np.zeros(self.o_shape)
+        times.append(time.time())
     
         for i in range(df_a.shape[0]):
             
     
             self.update_label_map(df_a.iloc[i], output_map)
+        times.append(time.time())
+#        print('all else ', times[1] - times[0])
+#        print('For loop ', times[2] - times[1])
+        
     
         return output_map
     
@@ -344,4 +342,60 @@ class keras_generator(Sequence):
 
         return X, y    
     
+   
+class keras_generator_from_sparse(Sequence):
+    'Generates data for Keras'
     
+    def __init__(self, use_idx, X,y, batch_size=4, shuffle=True, seed = None):
+        'Initialization'
+        self.use_idx = use_idx
+        self.X = X
+        self.y = y
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        
+        # set seed
+        np.random.seed(seed)
+        
+
+        self.on_epoch_end()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch'
+        return int(np.floor(len(self.use_idx) / self.batch_size))
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        # Generate indexes of the batch
+        idxs = self.shuffled_idx[index*self.batch_size:(index+1)*self.batch_size]
+
+
+        # Generate data
+        out_X, out_y = self.__data_generation(idxs)
+
+        return out_X, out_y
+
+    def on_epoch_end(self):
+        'Updates indexes after each epoch'
+        if self.shuffle:
+            self.shuffled_idx = np.random.permutation(self.use_idx)
+        else:
+            self.shuffled_idx = self.use_idx
+
+    def __data_generation(self, idxs):
+        'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
+        # Initialization
+        
+        
+        out_X = np.empty((self.batch_size, *self.X[0].shape))
+        out_y = np.empty((self.batch_size, *self.y[0].shape))
+
+        # Generate data
+        for i, idx in enumerate(idxs):
+            # Store sample
+            out_X[i] = self.X[idx].todense()
+
+            # Store class
+            out_y[i] = self.y[idx].todense()
+
+        return out_X, out_y        
