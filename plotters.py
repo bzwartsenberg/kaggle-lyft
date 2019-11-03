@@ -115,6 +115,39 @@ def plot_sample(sample, lyftdata, lidar = True, ax = None):
         plot_box(ax, box,lyftdata)
         
 
+def plot_sample_global(sample, lyftdata, lidar = True, ax = None):
+    lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
+
+
+    pc = LidarPointCloud.from_file(Path(lidar_top['filename']))
+    
+    # Points live in the point sensor frame. So they need to be transformed via global to the image plane.
+    # First step: transform the point-cloud to the ego vehicle frame for the timestamp of the sweep.
+    cs_record = lyftdata.get("calibrated_sensor", lidar_top["calibrated_sensor_token"])
+    pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
+    pc.translate(np.array(cs_record["translation"]))
+
+#    # Second step: transform to the global frame.
+    poserecord = lyftdata.get("ego_pose", lidar_top["ego_pose_token"])
+    pc.rotate(Quaternion(poserecord["rotation"]).rotation_matrix)
+    pc.translate(np.array(poserecord["translation"]))    
+
+    
+    if ax is None:
+        fig,ax = plt.subplots(figsize = (15,15))
+    
+    if lidar:
+        plot_pc(ax, pc)
+    
+    for ann in sample['anns']:
+        box = get_box(ann,lyftdata)
+        
+        #box.translate(-np.array(poserecord["translation"]))
+        #box.rotate(Quaternion(poserecord["rotation"]).inverse)
+        #box.render(ax)
+        plot_box(ax, box,lyftdata)        
+        
+
 def plot_output(generator, output_map, channel = 8, ax = None):
     
     if ax is None:

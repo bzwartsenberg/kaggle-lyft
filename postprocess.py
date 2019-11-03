@@ -13,6 +13,8 @@ from util_funcs import decode_predictionstring,get_points_in_a_rotated_box
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from lyft_dataset_sdk.lyftdataset import Quaternion
+
 class RotatedBox():
     
     def __init__(self,x,y,z,dx,dy,dz,th, score, objstr):
@@ -82,10 +84,10 @@ class RotatedBox():
     
     def get_array(self):
 	
-		return np.array([self.x, self.y, self.z, self.dx, self.dy, self.dz, self.th])
+        return np.array([self.x, self.y, self.z, self.dx, self.dy, self.dz, self.th])
 		
-	def get_obj(self)
-		return self.objstr
+    def get_obj(self):
+        return self.objstr
 		
         
 
@@ -98,61 +100,61 @@ class PostProcessor():
         self.test = test
         self.model = model
 		
-		self.nms_iou_threshold = config['nms_iou_threshold'] if 'nms_iou_threshold' in config else 0.3
-		self.cls_threshold = config['cls_threshold'] if 'cls_threshold' in config else 0.8
+        self.nms_iou_threshold = config['nms_iou_threshold'] if 'nms_iou_threshold' in config else 0.3
+        self.cls_threshold = config['cls_threshold'] if 'cls_threshold' in config else 0.8
 		
 
-	def df_to_pred_str(self, df):
+    def df_to_pred_str(self, df):
+        
+        cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
+        
+        pred_str_list = ['{} {} {} {} {} {} {} {} {}'.format(*df.loc[i][cols]) for i in range(df.shape[0])]
+        
+        return ' '.join(pred_str_list)
+    
+    def analyze_val_idx(self, idx):
+        
+        Id, true_predstr = self.gen.train['Id'][idx], self.gen.train['PredictionString'][idx]
+        
+        df = self.analyze_sample(Id)
+        
+        predicted_string = Id + ' ' + self.df_to_pred_str(df)
+        
+        return df, predicted_string, true_predstr
 		
-		cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
 		
-		pred_str_list = ['{} {} {} {} {} {} {} {} {}'.format(*row.loc[i][cols]) for i in range(df.shape[0])]
-	
-		return ' '.join(pred_str_list)
-		
-	def analyze_val_idx(self, idx):
-	
-		Id, true_predstr = self.gen.train['Id'][idx], self.gen.train['PredictionString'][idx]
-		
-		df = self.analyze_sample(Id)
-		
-		predicted_string = Id + ' ' + self.df_to_pred_str(df)
-		
-		return df, predicted_string, true_predstr
-		
-		
-	def analyze_sample(self, sample_id):
-	
-		X = np.expand_dims(self.gen.get_lidar_BEV(self,sample_token),0)
-		
-		y_pred = self.model.predict(X)
-		
-		picked_box_objs, picked_scores = filter_pred(y_pred[0], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
-		
-		picked_objstrs = np.array([obj.get_obj() for obj in picked_box_objs])
-		picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
-		
+    def analyze_sample(self, sample_id):
+        
+        X = np.expand_dims(self.gen.get_lidar_BEV(self,sample_id),0)
+        
+        y_pred = self.model.predict(X)
+        
+        picked_box_objs, picked_scores = filter_pred(y_pred[0], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
+        
+        picked_objstrs = np.array([obj.get_obj() for obj in picked_box_objs])
+        picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
+        
         df = pd.DataFrame(picked_pos_array)
         df.columns = ['x','y','z','dy','dx','dz','yaw']
         df['cat'] = picked_objstrs
         df['scores'] = picked_scores
 
-		
-		#translate and rotate:
 
-        sample = self.lyftdata.get('sample', sample_token)
-        lidar_top = self.lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
-        ego_pose = self.lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
-    	
+        #translate and rotate:
+
+        sample = self.gen.lyftdata.get('sample', sample_id)
+        lidar_top = self.gen.lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
+        ego_pose = self.gen.lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
+        
         qt = Quaternion(ego_pose["rotation"])
-	
-		df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
+        
+        df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
 
-		df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
-	
+        df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
+        
         df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
-		
-		return df
+        
+        return df
 	
 
 
@@ -252,6 +254,48 @@ def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold):
     
     return picked_box_objs, picked_scores
 
+
+def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id):
+        
+    predictions = []
+    
+    picked_objstrs = np.array([obj.get_obj() for obj in picked_box_objs])
+    picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
+    
+    df = pd.DataFrame(picked_pos_array)
+    df.columns = ['x','y','z','dy','dx','dz','yaw']
+    df['cat'] = picked_objstrs
+    df['score'] = picked_scores
+
+
+    #translate and rotate:
+
+    sample = lyftdata.get('sample', Id)
+    lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
+    ego_pose = lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
+    
+    qt = Quaternion(ego_pose["rotation"])
+    
+    df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
+
+    df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
+    
+    df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
+    
+    
+    for i in range(df.shape[0]):
+        predictions.append({
+                'sample_token' : Id,
+                'name' : df['cat'][i],
+                'score' : df['score'][i],
+                'translation' : df[['x','y','z']][i],
+                'size' : df[['dy','dx','dz']][i],
+                'rotation' : [df['yaw'][i],0.,0.,1.],
+                })
+            
+    return predictions
+    
+    
 
 
 def make_prediction_string(box_objs):
