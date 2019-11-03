@@ -157,14 +157,18 @@ class data_generator():
         for sensor_name in sample['data'].keys():
             if 'LIDAR' in sensor_name:
                 lidar = self.lyftdata.get('sample_data', sample['data'][sensor_name])
-                pc = LidarPointCloud.from_file(Path(lidar['filename']))
+                
+                try:
+                    
+                    pc = LidarPointCloud.from_file(Path(lidar['filename']))
+                    #transform to vehicle frame:
+                    cs_record = self.lyftdata.get("calibrated_sensor", lidar["calibrated_sensor_token"])
+                    pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
+                    pc.translate(np.array(cs_record["translation"]))
     
-                #transform to vehicle frame:
-                cs_record = self.lyftdata.get("calibrated_sensor", lidar["calibrated_sensor_token"])
-                pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
-                pc.translate(np.array(cs_record["translation"]))
-
-                feature_map += np.histogramdd(pc.points[0:3].T, [self.xaxis_lim, self.yaxis_lim, self.zaxis_lim])[0]
+                    feature_map += np.histogramdd(pc.points[0:3].T, [self.xaxis_lim, self.yaxis_lim, self.zaxis_lim])[0]
+                except ValueError as e:
+                    print('Ignored ', e)
                     
                         
         #bin points:
@@ -340,6 +344,61 @@ class keras_generator(Sequence):
             # Store class
             y[i] = self.gen.get_output_map(self.gen.train['Id'][idx], self.gen.train['PredictionString'][idx])
 
+        return X, y    
+
+class keras_generator_empty_y_map(Sequence):
+    'Generates data for Keras'
+    
+    def __init__(self, use_idx, generator, batch_size=4, shuffle=True, seed = None):
+        'Initialization'
+        self.use_idx = use_idx
+        self.gen = generator
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        
+        # set seed
+        np.random.seed(seed)
+        
+
+        self.on_epoch_end()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch'
+        return int(np.floor(len(self.use_idx) / self.batch_size))
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        # Generate indexes of the batch
+        idxs = self.shuffled_idx[index*self.batch_size:(index+1)*self.batch_size]
+
+
+        # Generate data
+        X, y = self.__data_generation(idxs)
+
+        return X, y
+
+    def on_epoch_end(self):
+        'Updates indexes after each epoch'
+        if self.shuffle:
+            self.shuffled_idx = np.random.permutation(self.use_idx)
+        else:
+            self.shuffled_idx = self.use_idx
+
+    def __data_generation(self, idxs):
+        'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
+        # Initialization
+        
+        
+        X = np.empty((self.batch_size, *self.gen.shape))
+        y = np.empty((self.batch_size, *self.gen.o_shape))
+
+        # Generate data
+        for i, idx in enumerate(idxs):
+            # Store sample
+            X[i] = self.gen.get_lidar_BEV(self.gen.train['Id'][idx])
+
+            # Store class
+            y[i] = np.zeros(self.gen.o_shape)
         return X, y    
     
    
