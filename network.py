@@ -121,10 +121,7 @@ def make_cls_head(x, n_classes):
 
     kernel_initializer = 'glorot_uniform'
     
-    if n_classes == 1:
-        activation = 'sigmoid'
-    else:
-        activation = 'softmax'
+    activation = 'sigmoid'
     
     cls_pred = Conv2D(n_classes, 
                kernel_size = (3,3), 
@@ -135,20 +132,6 @@ def make_cls_head(x, n_classes):
     
     return cls_pred
 
-def make_obj_head(x):
-
-    kernel_initializer = 'glorot_uniform'
-    
-    activation = 'sigmoid'
-    
-    obj_pred = Conv2D(1, 
-               kernel_size = (3,3), 
-               strides=(1,1), padding = 'same', 
-               kernel_initializer = kernel_initializer,
-               activation = activation,
-               name='obj_output')(x)    
-    
-    return obj_pred
 
 
 def make_reg_head(x):
@@ -189,29 +172,22 @@ def make_header(x, n_classes, use_bn = False):
         
 
     cls_pred = make_cls_head(x, n_classes)
-    obj_pred = make_obj_head(x)
     
     reg = make_reg_head(x)
 
-    return reg, obj_pred, cls_pred
+    return reg, cls_pred
 
 
-def get_loss(n_classes, cls_weight, obj_weight):
+def get_loss(n_classes, cls_weight):
     
-    #Note: need to see if this is right for image data with cat. crossent.
-    if n_classes == 1:
-        crossentropy = binary_crossentropy
-    else:
-        crossentropy = categorical_crossentropy
+    crossentropy = binary_crossentropy
     
     size_reg = [-1,-1,-1,8]
     start_reg = [0,0,0,0]
 
-    size_obj = [-1,-1,-1,1]
-    start_obj = [0,0,0,8]
 
     size_cls = [-1,-1,-1,n_classes]
-    start_cls = [0,0,0,9]
+    start_cls = [0,0,0,8]
     
     def cls_loss(y_true, y_pred):
 
@@ -222,14 +198,6 @@ def get_loss(n_classes, cls_weight, obj_weight):
         
         return cls_loss      
     
-    def obj_loss(y_true, y_pred):
-
-        obj_true = K.slice(y_true, start_obj, size_obj)
-        obj_pred = K.slice(y_pred, start_obj, size_obj)
-        
-        obj_loss = binary_crossentropy(obj_true, obj_pred)
-        
-        return obj_loss         
         
     def reg_loss(y_true, y_pred):
         
@@ -253,8 +221,6 @@ def get_loss(n_classes, cls_weight, obj_weight):
         reg_true = K.slice(y_true, start_reg, size_reg)
         reg_pred = K.slice(y_pred, start_reg, size_reg)
 
-        obj_true = K.slice(y_true, start_obj, size_obj)
-        obj_pred = K.slice(y_pred, start_obj, size_obj)
 
         cls_true = K.slice(y_true, start_cls, size_cls)
         cls_pred = K.slice(y_pred, start_cls, size_cls)
@@ -262,16 +228,16 @@ def get_loss(n_classes, cls_weight, obj_weight):
         
         cls_loss = crossentropy(cls_true, cls_pred)
         
-        obj_loss = crossentropy(obj_true, obj_pred)
         
         
-        reg_mask = obj_true
+#        reg_mask = obj_true
+        reg_mask = K.sum(cls_true, axis = -1, keepdims = True)
         
         reg_loss = logcosh(reg_true, reg_mask*reg_pred)
         
-        return reg_loss + cls_weight*cls_loss + obj_weight*obj_loss
+        return reg_loss + cls_weight*cls_loss
     
-    return loss, cls_loss, reg_loss, obj_loss
+    return loss, cls_loss, reg_loss
 
 
 
@@ -287,15 +253,15 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
                        expand_channels = expand_channels
                        )
     
-    reg, obj_pred, cls_pred = make_header(p4, n_classes, use_bn = use_bn)
+    reg, cls_pred = make_header(p4, n_classes, use_bn = use_bn)
     
-    out = Concatenate(axis=-1)([reg,obj_pred, cls_pred])
+    out = Concatenate(axis=-1)([reg,cls_pred])
     
     return inp, out
     
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1., obj_weight = 1.):
+def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1.):
     
     
     inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
@@ -305,20 +271,20 @@ def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_we
     #note: need to update this to a more appropriate lossfunction:
     # basically the regression loss is calculated where the category is non-zero, so only where an object is
     
-    loss, cls_loss, reg_loss, obj_loss =  get_loss(n_classes, cls_weight, obj_weight)
+    loss, cls_loss, reg_loss =  get_loss(n_classes, cls_weight)
     
     model.compile(
                   optimizer='adam',
                   loss=loss,
-                metrics = [cls_loss, reg_loss, obj_loss])
+                metrics = [cls_loss, reg_loss])
     
     return model
 
 
 
 if __name__ == '__main__':
-    model = get_model((512,512,6), 8, use_bn = False, expand_channels = 4, cls_weight = 1., obj_weight = 1.)
-#    model.summary()
+    model = get_model((512,512,6), 8, use_bn = False, expand_channels = 4, cls_weight = 1.)
+    model.summary()
 #    
     import os
     os.environ['KMP_DUPLICATE_LIB_OK']='True'
@@ -327,7 +293,7 @@ if __name__ == '__main__':
     import numpy as np
     
     X = np.random.uniform(size = (12,512,512,6))
-    y = np.random.uniform(size = (12,128,128,17))
+    y = np.random.uniform(size = (12,128,128,16))
     
     
     model.fit(X,y, batch_size = 2, epochs = 2)

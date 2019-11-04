@@ -106,8 +106,8 @@ class data_generator():
         self.output_scale = 4
         self.o_delta = self.delta*self.output_scale
         
-        #output features: x,y,z,dx,dy,dz,cos(th),sin(th),isobject,n_classes     
-        self.o_shape = tuple(map(int, [(self.xlim[1]-self.xlim[0])/self.o_delta, (self.ylim[1]-self.ylim[0])/self.o_delta, 8 + 1 + self.n_classes])) 
+        #output features: x,y,z,dx,dy,dz,cos(th),sin(th),n_classes     
+        self.o_shape = tuple(map(int, [(self.xlim[1]-self.xlim[0])/self.o_delta, (self.ylim[1]-self.ylim[0])/self.o_delta, 8 + self.n_classes])) 
         
         
         self.o_xaxis_lim = np.linspace(*self.xlim, self.o_shape[0]+1)
@@ -198,7 +198,7 @@ class data_generator():
         return corners
     
     
-    def update_label_map(self, df_row, out_part_1, out_part_2,has_object_map, class_map):
+    def update_label_map(self, df_row, out_part_1, out_part_2, class_map):
         #array_x and array_y should be array.shape[0]+1 and array.shape[1]+1 to be used with digitize
         
         corners = self.get_corners(df_row)
@@ -212,7 +212,6 @@ class data_generator():
 
         cv2.drawContours(out_part_1, contours=[corner_bins], contourIdx=-1, color=reg_target[0:4], thickness=-1)
         cv2.drawContours(out_part_2, contours=[corner_bins], contourIdx=-1, color=reg_target[4:8], thickness=-1)
-        cv2.drawContours(has_object_map, contours=[corner_bins], contourIdx=-1, color=1., thickness=-1)
         cv2.drawContours(class_map, contours=[corner_bins], contourIdx=-1, color=1., thickness=-1)
 
     
@@ -265,19 +264,17 @@ class data_generator():
         
         out_part_2 = np.zeros(self.o_shape[0:2] + (4,))
         class_maps = {cat : np.zeros(self.o_shape[0:2]) for cat in self.inc_classes}
-        has_object_map = np.zeros(self.o_shape[0:2])
         
     
         for i in range(df_a.shape[0]):
             
     
-            self.update_label_map(df_a.iloc[i], out_part_1, out_part_2,has_object_map, class_maps[df_a['cat'][i]])
+            self.update_label_map(df_a.iloc[i], out_part_1, out_part_2, class_maps[df_a['cat'][i]])
         
         output_map[:,:,0:4] = out_part_1
         output_map[:,:,4:8] = out_part_2
-        output_map[:,:,8] = has_object_map
         for cat in self.inc_classes:
-            output_map[:,:,9 + self.cat_to_num[cat]] = class_maps[cat]
+            output_map[:,:,8 + self.cat_to_num[cat]] = class_maps[cat]
         
         #correct x and y:
         output_map[:,:,0] -= self.o_xaxis.reshape((-1,1))
