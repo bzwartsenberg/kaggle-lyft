@@ -135,6 +135,22 @@ def make_cls_head(x, n_classes):
     
     return cls_pred
 
+def make_obj_head(x):
+
+    kernel_initializer = 'glorot_uniform'
+    
+    activation = 'sigmoid'
+    
+    obj_pred = Conv2D(1, 
+               kernel_size = (3,3), 
+               strides=(1,1), padding = 'same', 
+               kernel_initializer = kernel_initializer,
+               activation = activation,
+               name='obj_output')(x)    
+    
+    return obj_pred
+
+
 def make_reg_head(x):
 
     kernel_initializer = 'glorot_uniform'
@@ -173,13 +189,14 @@ def make_header(x, n_classes, use_bn = False):
         
 
     cls_pred = make_cls_head(x, n_classes)
+    obj_pred = make_obj_head(x)
     
     reg = make_reg_head(x)
 
-    return cls_pred, reg
+    return reg, obj_pred, cls_pred
 
 
-def get_loss(n_classes, cls_weight):
+def get_loss(n_classes, cls_weight, obj_weight):
     
     #Note: need to see if this is right for image data with cat. crossent.
     if n_classes == 1:
@@ -190,8 +207,11 @@ def get_loss(n_classes, cls_weight):
     size_reg = [-1,-1,-1,8]
     start_reg = [0,0,0,0]
 
+    size_obj = [-1,-1,-1,1]
+    start_obj = [0,0,0,8]
+
     size_cls = [-1,-1,-1,n_classes]
-    start_cls = [0,0,0,8]
+    start_cls = [0,0,0,9]
     
     def cls_loss(y_true, y_pred):
 
@@ -200,7 +220,16 @@ def get_loss(n_classes, cls_weight):
         
         cls_loss = crossentropy(cls_true, cls_pred)
         
-        return cls_loss        
+        return cls_loss      
+    
+    def obj_loss(y_true, y_pred):
+
+        obj_true = K.slice(y_true, start_obj, size_obj)
+        obj_pred = K.slice(y_pred, start_obj, size_obj)
+        
+        obj_loss = binary_crossentropy(obj_true, obj_pred)
+        
+        return obj_loss         
         
     def reg_loss(y_true, y_pred):
         
@@ -224,19 +253,25 @@ def get_loss(n_classes, cls_weight):
         reg_true = K.slice(y_true, start_reg, size_reg)
         reg_pred = K.slice(y_pred, start_reg, size_reg)
 
+        obj_true = K.slice(y_true, start_obj, size_obj)
+        obj_pred = K.slice(y_pred, start_obj, size_obj)
+
         cls_true = K.slice(y_true, start_cls, size_cls)
         cls_pred = K.slice(y_pred, start_cls, size_cls)
         
         
         cls_loss = crossentropy(cls_true, cls_pred)
         
-        reg_mask = K.sum(cls_true, axis = -1, keepdims = True)
+        obj_loss = crossentropy(obj_true, obj_pred)
+        
+        
+        reg_mask = obj_true
         
         reg_loss = logcosh(reg_true, reg_mask*reg_pred)
         
-        return reg_loss + cls_weight*cls_loss
+        return reg_loss + cls_weight*cls_loss + obj_weight*obj_loss
     
-    return loss, cls_loss, reg_loss
+    return loss, cls_loss, reg_loss, obj_loss
 
 
 
@@ -252,15 +287,15 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
                        expand_channels = expand_channels
                        )
     
-    cls_pred, reg = make_header(p4, n_classes, use_bn = use_bn)
+    reg, obj_pred, cls_pred = make_header(p4, n_classes, use_bn = use_bn)
     
-    out = Concatenate(axis=-1)([reg, cls_pred])
+    out = Concatenate(axis=-1)([reg,obj_pred, cls_pred])
     
     return inp, out
     
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1.):
+def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1., obj_weight = 1.):
     
     
     inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
@@ -270,82 +305,31 @@ def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_we
     #note: need to update this to a more appropriate lossfunction:
     # basically the regression loss is calculated where the category is non-zero, so only where an object is
     
-    loss, cls_loss, reg_loss =  get_loss(n_classes, cls_weight)
+    loss, cls_loss, reg_loss, obj_loss =  get_loss(n_classes, cls_weight, obj_weight)
     
     model.compile(
                   optimizer='adam',
                   loss=loss,
-                metrics = [cls_loss, reg_loss])
+                metrics = [cls_loss, reg_loss, obj_loss])
     
     return model
 
 
-## THere is backbone, which consists of a bottleneck
-##
 
-##  Of 3, 6, 6, 3  res_blocks
-##    24, 48, 64, 96  output channels
-        
-# block1: 
-        # conv13x3(36,32)
-        # if bn: bn
-        # relu
-        # conv2_3x3(32,32)
-        #if bn: bn
-        # relu
-        
-# block2:
-        #Bottleneck, 24, 3
-        # 1 block(in_planes, planes,stride =2, downsample)
-        #
-        #then (3 - 1) normal blocks:
-        # block(in_planes, planes, stride =1 
-        
-# block3-5: see block 2
-        
-        
-#where Bottleneck:
-        # res = x
-        # conv_1x1
-        # (bn)
-        # relu
-        # conv_3x3 (stride = 2), bn, relu
-        # conv_1x1(in, expansion*in), bn
-        # out = out + res  (if stride = 2, then downsample res)
-        # downsample is done using a 2d convolution, 
-        #with kernel size 1, proper in/out channels, and optionally batch norm
-        
-        #so every bottleneck has n_channels
-        # and has a series n_channels, n_channels, n_channels*4
-        # the first bottleneck has a downsample
-
-        # so in terms of tensor shapes, after block1, youd have:
-        #
-        # [x, y, 32]
-        #
-        # into block2:
-        # [x  , y  , 24] (conv1x1) #bottleneck 1
-        # [x/2, y/2, 24] (conv3x3)
-        # [x/2, y/2, 96] (conv1x1)
-        # [x/2, y/2, 24] (conv1x1) #bottleneck2
-        # [x/2, y/2, 24] (conv3x3)
-        # [x/2, y/2, 96] (conv1x1)
-        # [x/2, y/2, 24] (conv1x1)#bottleneck3
-        # [x/2, y/2, 24] (conv3x3)
-        # [x/2, y/2, 96] (conv1x1)
-        
-        #into block3:
-        # [x/2, x/2, 48] (conv1x1) #bottleneck1
-        # [x/4, x/4, 48] (conv3x3) 
-        # etc
-        
-        
-        
-        
-#Then you have 
+if __name__ == '__main__':
+    model = get_model((512,512,6), 8, use_bn = False, expand_channels = 4, cls_weight = 1., obj_weight = 1.)
+#    model.summary()
+#    
+    import os
+    os.environ['KMP_DUPLICATE_LIB_OK']='True'
     
     
+    import numpy as np
+    
+    X = np.random.uniform(size = (12,512,512,6))
+    y = np.random.uniform(size = (12,128,128,17))
     
     
+    model.fit(X,y, batch_size = 2, epochs = 2)
 
     
