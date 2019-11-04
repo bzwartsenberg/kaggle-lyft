@@ -178,7 +178,7 @@ def make_header(x, n_classes, use_bn = False):
     return reg, cls_pred
 
 
-def get_loss(n_classes, cls_weight):
+def get_loss(n_classes, cls_weight, reg_weight):
     
     crossentropy = binary_crossentropy
     
@@ -196,7 +196,7 @@ def get_loss(n_classes, cls_weight):
         
         cls_loss = crossentropy(cls_true, cls_pred)
         
-        return cls_loss      
+        return cls_loss*cls_loss    
     
         
     def reg_loss(y_true, y_pred):
@@ -210,7 +210,7 @@ def get_loss(n_classes, cls_weight):
         
         reg_loss = logcosh(reg_true, reg_mask*reg_pred)    
         
-        return reg_loss
+        return reg_loss*reg_weight
     
     
     def loss(y_true, y_pred):
@@ -235,7 +235,7 @@ def get_loss(n_classes, cls_weight):
         
         reg_loss = logcosh(reg_true, reg_mask*reg_pred)
         
-        return reg_loss + cls_weight*cls_loss
+        return reg_loss*reg_weight + cls_weight*cls_loss
     
     return loss, cls_loss, reg_loss
 
@@ -261,7 +261,7 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
     
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1.):
+def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1., reg_weight = 1.):
     
     
     inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
@@ -271,7 +271,7 @@ def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_we
     #note: need to update this to a more appropriate lossfunction:
     # basically the regression loss is calculated where the category is non-zero, so only where an object is
     
-    loss, cls_loss, reg_loss =  get_loss(n_classes, cls_weight)
+    loss, cls_loss, reg_loss =  get_loss(n_classes, cls_weight, reg_weight)
     
     model.compile(
                   optimizer='adam',
