@@ -189,17 +189,17 @@ def get_loss(n_classes, cls_weight, reg_weight):
     size_cls = [-1,-1,-1,n_classes]
     start_cls = [0,0,0,8]
     
-    def cls_loss(y_true, y_pred):
+    def cls_loss_func(y_true, y_pred):
 
         cls_true = K.slice(y_true, start_cls, size_cls)
         cls_pred = K.slice(y_pred, start_cls, size_cls)
         
         cls_loss = crossentropy(cls_true, cls_pred)
         
-        return cls_loss*cls_loss    
+        return cls_loss*cls_weight 
     
         
-    def reg_loss(y_true, y_pred):
+    def reg_loss_func(y_true, y_pred):
         
         reg_true = K.slice(y_true, start_reg, size_reg)
         reg_pred = K.slice(y_pred, start_reg, size_reg)
@@ -213,7 +213,7 @@ def get_loss(n_classes, cls_weight, reg_weight):
         return reg_loss*reg_weight
     
     
-    def loss(y_true, y_pred):
+    def loss_func(y_true, y_pred):
         
         #y[:,:,0:8] is reg
         #y[:,:,8:]  is classes
@@ -237,7 +237,7 @@ def get_loss(n_classes, cls_weight, reg_weight):
         
         return reg_loss*reg_weight + cls_weight*cls_loss
     
-    return loss, cls_loss, reg_loss
+    return loss_func, cls_loss_func, reg_loss_func
 
 
 
@@ -261,7 +261,7 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
     
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 1., reg_weight = 1.):
+def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 10., reg_weight = 5.):
     
     
     inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
