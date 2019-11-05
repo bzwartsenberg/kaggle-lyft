@@ -96,22 +96,29 @@ class RotatedBox():
 		
         
 
-class ValidationPostProcessor():
+class PostProcessor():
 
-    def __init__(self, model, data_generator, val_idx, 
+    def __init__(self, model, data_generator, use_idx, 
                  nms_iou_threshold=0.2, 
                  cls_threshold=0.7,
                  chunk_size=100):
         
+        
+        ##Note: right now, the data_generator for testing is set up to load the "test" dataframe
+        #into the "train" attribute of data_generator
+        #this is because for the test set you need to make a new datagenerator anyway with the
+        #correct symlinks
+        
         self.gen = data_generator
         self.model = model
-        self.val_idx = val_idx
+        self.use_idx = use_idx
         self.chunk_size=100
 		
         self.nms_iou_threshold = nms_iou_threshold
         self.cls_threshold = cls_threshold
         
-        self.val_predictions = []
+        self.evaluated_predictions = []
+        self.evaluated_predictions_string = []
 
 		
 
@@ -130,7 +137,8 @@ class ValidationPostProcessor():
             predictions = box_objs_to_lyft_sdk_format(picked_box_objs, 
                                                       picked_scores, 
                                                       self.gen.lyftdata, 
-                                                      self.gen.train.iloc[idx[i]]['Id'])
+                                                      self.gen.train.iloc[idx[i]]['Id'],
+                                                      self.gen.num_to_cat)
             
             return predictions
         
@@ -139,22 +147,58 @@ class ValidationPostProcessor():
         
         return predictions_fox_idx
     
+    def analyze_chunk_to_string(self, idx, workers=4):
+        
+        
+        chunk_gen = evaulation_generator(idx, self.gen, batch_size=4)
+        
+        pred_im = self.model.predict_generator(chunk_gen, multiprocessing=True, workers=workers)
+        
+        #list of lists
+        predictions_fox_idx = []
+        
+        def mapping_func(i):
+            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
+
+            if len(picked_box_objs) == 0:
+                return ''
+            else:
+                return box_objs_to_str(picked_box_objs, picked_scores, self.gen.num_to_cat)
+        
+        p = Pool(workers)
+        predictions_fox_idx = p.map(mapping_func, range(idx.shape[0]))
+        
+        return predictions_fox_idx
+    
+    
     
     def make_predictions(self):
         
-        num_chunks = np.ceil(self.val_idx.shape[0]/self.chunk_size)
+        num_chunks = np.ceil(self.use_idx.shape[0]/self.chunk_size)
         
-        self.val_predictions = []
+        self.evaluated_predictions = []
         
         for i in range(num_chunks):
-            idx = self.val_idx[i*self.chunk_size:max((i+1)*self.chunk_size, self.val_idx.shape[0])]
+            idx = self.use_idx[i*self.chunk_size:max((i+1)*self.chunk_size, self.use_idx.shape[0])]
             
-            self.val_predictions.append(self.analyze_chunk(idx))
+            self.evaluated_predictions.append(self.analyze_chunk(idx))
+            
+    def make_predictions_to_string(self):
+        
+        num_chunks = np.ceil(self.use_idx.shape[0]/self.chunk_size)
+        
+        self.evaluated_predictions_string = []
+        
+        for i in range(num_chunks):
+            idx = self.use_idx[i*self.chunk_size:max((i+1)*self.chunk_size, self.use_idx.shape[0])]
+            
+            self.evaluated_predictions_string.append(self.analyze_chunk_to_string(idx))
+
     
     
     def calculate_mAP(self, over_iou_thresh=0.1, over_class_names=None):
-        
-        if self.val_predictions == []:
+        """For use as a validation tool"""
+        if self.evaluated_predictions == []:
             print('Run "make_predictions" first')
             
         if over_class_names is None:
@@ -169,11 +213,11 @@ class ValidationPostProcessor():
             
             precs = []
         
-            for i,idx in enumerate(self.val_idx):
+            for i,idx in enumerate(self.use_idx):
                 predictions_gt = prediction_string_to_prediction_dicts_gt(self.gen.train.iloc[idx]['PredictionString'], 
                                                                       self.gen.train.iloc[idx]['Id'])
         
-                prec = get_average_precisions(predictions_gt, self.val_predictions[i], over_class_names,iou)
+                prec = get_average_precisions(predictions_gt, self.evaluated_predictions[i], over_class_names,iou)
 
                 precs.append(np.array(prec))
             precs_over_iou.append(np.array(precs).mean(axis=0))
@@ -181,76 +225,23 @@ class ValidationPostProcessor():
         
         return np.array(over_iou_thresh),np.array(precs_over_iou)
 
+    def write_prediction_df(self, save_path = 'out.csv'):
+        """For use as a test set prediction tool"""
+        
+        #note: in this case "train" should be the test set!
+        df_out = self.gen.train.copy()
+        
+        
+        if self.evaluated_predictions_string == []:
+            print('Run "make_predictions_to_string" first')
+            
+        df_out['PredictionString'] = pd.Series(self.evaluated_predictions_string)
+        
+        df_out.to_csv(save_path)
 
 
 
-class PostProcessor():
 
-    def __init__(self, model, data_generator, test, config = {}):
-        
-        self.gen = data_generator
-        self.test = test
-        self.model = model
-		
-        self.nms_iou_threshold = config['nms_iou_threshold'] if 'nms_iou_threshold' in config else 0.3
-        self.cls_threshold = config['cls_threshold'] if 'cls_threshold' in config else 0.8
-		
-
-    def df_to_pred_str(self, df):
-        
-        cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
-        
-        pred_str_list = ['{} {} {} {} {} {} {} {} {}'.format(*df.loc[i][cols]) for i in range(df.shape[0])]
-        
-        return ' '.join(pred_str_list)
-    
-    def analyze_val_idx(self, idx):
-        
-        Id, true_predstr = self.gen.train['Id'][idx], self.gen.train['PredictionString'][idx]
-        
-        df = self.analyze_sample(Id)
-        
-        predicted_string = Id + ' ' + self.df_to_pred_str(df)
-        
-        return df, predicted_string, true_predstr
-		
-		
-    def analyze_sample(self, sample_id):
-        
-        X = np.expand_dims(self.gen.get_lidar_BEV(self,sample_id),0)
-        
-        y_pred = self.model.predict(X)
-        
-        picked_box_objs, picked_scores = filter_pred(y_pred[0], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
-        
-        picked_objstrs = np.array([obj.get_obj() for obj in picked_box_objs])
-        picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
-        
-        df = pd.DataFrame(picked_pos_array)
-        df.columns = ['x','y','z','dy','dx','dz','yaw']
-        df['cat'] = picked_objstrs
-        df['scores'] = picked_scores
-
-
-        #translate and rotate:
-
-        sample = self.gen.lyftdata.get('sample', sample_id)
-        lidar_top = self.gen.lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
-        ego_pose = self.gen.lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
-        
-        qt = Quaternion(ego_pose["rotation"])
-        
-        df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
-
-        df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
-        
-        df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
-        
-        return df
-	
-
-
-	
 
 def convert_to_box_objs(pred_array,cls_pred_array,cls_scores_array):
     """
@@ -350,6 +341,9 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num
         
     predictions = []
     
+    if len(picked_box_objs) == 0:
+        return predictions
+    
     picked_objstrs = np.array([num_to_cat[obj.get_obj()] for obj in picked_box_objs])
     picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
     
@@ -385,7 +379,27 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num
                 })
             
     return predictions
+
+def box_objs_to_str(picked_box_objs, picked_scores, num_to_cat):
+    """Convert a series of box objects and scores to a prediction string"""
     
+    if len(picked_box_objs) == 0:
+        return ''
+    picked_objstrs = np.array([num_to_cat[obj.get_obj()] for obj in picked_box_objs])
+    picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
+    
+    df = pd.DataFrame(picked_pos_array)
+    df.columns = ['x','y','z','dy','dx','dz','yaw']
+    df['cat'] = picked_objstrs
+    df['score'] = picked_scores
+    
+    cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
+    
+    pred_str_list = ['{} {} {} {} {} {} {} {} {}'.format(*df.loc[i][cols]) for i in range(df.shape[0])]
+    
+    return ' '.join(pred_str_list)
+
+
 
 def decode_predictionstring_gt(pred_str):
     
