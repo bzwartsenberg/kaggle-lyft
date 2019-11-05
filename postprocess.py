@@ -17,7 +17,7 @@ from lyft_dataset_sdk.lyftdataset import Quaternion
 
 class RotatedBox():
     
-    def __init__(self,x,y,z,dx,dy,dz,th, score, objstr):
+    def __init__(self,x,y,z,dx,dy,dz,th, score, obj_num):
         
         corners = np.array([[- dx/2, dy/2],
                            [- dx/2,  -dy/2],
@@ -45,7 +45,7 @@ class RotatedBox():
         self.z_hi = z + dz/2
         
         self.score = score
-        self.objstr = objstr
+        self.obj_num = obj_num
         
         
     def z_intersect(self, box):
@@ -87,7 +87,7 @@ class RotatedBox():
         return np.array([self.x, self.y, self.z, self.dx, self.dy, self.dz, self.th])
 		
     def get_obj(self):
-        return self.objstr
+        return self.obj_num
 		
         
 
@@ -160,7 +160,7 @@ class PostProcessor():
 
 	
 
-def convert_to_box_objs(pred_array):
+def convert_to_box_objs(pred_array,cls_pred_array,cls_scores_array):
     """
     Args:
         pred_array: [N, (x,y,z,logdx,logdy,logdz,costh,sinth)]
@@ -172,7 +172,7 @@ def convert_to_box_objs(pred_array):
     th = np.arctan(pred_array[:,7]/pred_array[:,6])  #th = arctan(sin/cos)
 
 
-    rot_boxes = [RotatedBox(*pred_array[i,0:3], *dxdydz[i], th[i], pred_array[i,8], 'car') for i in range(pred_array.shape[0])]
+    rot_boxes = [RotatedBox(*pred_array[i,0:3], *dxdydz[i], th[i], cls_scores_array[i], cls_pred_array[i]) for i in range(pred_array.shape[0])]
     
     return np.array(rot_boxes)
 
@@ -188,12 +188,12 @@ def compute_ious(rot_box, with_rot_boxes):
 
 
 
-def non_max_suppression(pred_box_array, nms_iou_threshold):
+def non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold):
 
     assert pred_box_array.shape[0] > 0
     
 
-    box_obj_array = convert_to_box_objs(pred_box_array)
+    box_obj_array = convert_to_box_objs(pred_box_array,cls_pred_array,cls_scores_array)
     
     scores = pred_box_array[:, -1]
 
@@ -222,7 +222,7 @@ def non_max_suppression(pred_box_array, nms_iou_threshold):
     return np.array(picks, dtype=np.int32),box_obj_array
 
 def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold):
-    #NOTE THIS ONLY WORKS FOR SINGLE CLASS PREDICTION!!!
+    #I should be able to improve this for batch type inference, at least the first type
 
     if len(pred_image.shape) == 4:
         pred_image = np.squeeze(pred_image, 0)
@@ -230,36 +230,35 @@ def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold):
     pred_image[:,:,0] += x_scale.reshape((-1,1))
     pred_image[:,:,1] += y_scale.reshape((1,-1))
     
-    cls_pred = pred_image[:,:,-1]
+    #this predicts the indices
+    cls_pred = np.argmax(pred_image[:,:,8:], axis=2)
+    cls_scores = pred_image[:,:,8:].max(axis=2)
     
-    ##FOR THIS ALGORITHM TO WORK CAN"T USE SOFTMAX
-    # HAVE TO USE SIGMOID. OTHERWISE THERE WOULD ALWAYS BE A PRED > cls_threshold
+    idx = np.argwhere(cls_scores > cls_threshold)
     
-    
-    idx = np.argwhere(cls_pred > cls_threshold)    
-    
-    if idx.shape[0] == 0:
+    if idx.shape[0] == 0:#no boxes found
         return np.array([]),np.array([])
-
-
-    #a (n_boxes,9) size array, (flattened and filtered by > cls_threshold of pred image)
-    pred_box_array = pred_image[idx[:,0], idx[:,1]]
-    
         
-    #return numpy array of RotatedBox objects as well, so they can use a method to convert to string
-    selected_box_idxs, box_obj_array = non_max_suppression(pred_box_array, nms_iou_threshold)
-    
-    picked_box_objs = box_obj_array[selected_box_idxs]
-    picked_scores = pred_box_array[selected_box_idxs, -1]
-    
-    return picked_box_objs, picked_scores
+    else:
+        #a (n_boxes,9) size array, (flattened and filtered by > cls_threshold of pred image)
+        pred_box_array = pred_image[idx[:,0], idx[:,1],:8]
+        cls_pred_array = cls_pred[idx[:,0], idx[:,1]]
+        cls_scores_array = cls_scores[idx[:,0],idx[:,1]]
+            
+        #return numpy array of RotatedBox objects as well, so they can use a method to convert to string
+        selected_box_idxs, box_obj_array = non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold)
+        
+        picked_box_objs = box_obj_array[selected_box_idxs]
+        picked_scores = pred_box_array[selected_box_idxs, -1]
+        
+        return picked_box_objs, picked_scores
 
 
-def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id):
+def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num_to_cat):
         
     predictions = []
     
-    picked_objstrs = np.array([obj.get_obj() for obj in picked_box_objs])
+    picked_objstrs = np.array([num_to_cat[obj.get_obj()] for obj in picked_box_objs])
     picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
     
     df = pd.DataFrame(picked_pos_array)
@@ -297,78 +296,7 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id):
     
     
 
-
-def make_prediction_string(box_objs):
-    pred_str = ''
-    for box_obj in box_objs:
-        pred_str += box_obj.get_pred_str()
-        pred_str += ' '
-        
-        
-    return pred_str[:-1]
     
-
-        
-    
-def plot_Rotated_box(ax, rotated_box):
-    
-    coords = np.array(mapping(rotated_box.base_poly)['coordinates'])[0]
-    
-    ax.plot(coords[:,0],coords[:,1])
-    
-    
-def plot_boxes(box_array, ax = None):
-    
-    if ax is None:
-        fig,ax = plt.subplots(figsize = (5,5))
-    
-    for box in box_array:
-        plot_Rotated_box(ax, box)
-    
-
-if __name__ == '__main__':
-        
-    
-    test_y_pred = np.load('/Users/berend/Google Drive/colab_files/test_y_pred.npy')
-    test_y_true = np.load('/Users/berend/Google Drive/colab_files/test_y_true.npy')
-    
-    pred_image = test_y_pred[3]
-    pred_image2 = test_y_true[3]
-    
-    cls_pred = pred_image[:,:,-1]
-
-    cls_threshold = 0.7
-    idx = np.argwhere(cls_pred > cls_threshold)    
-    pred_box_array = pred_image[idx[:,0], idx[:,1]]
-    
-    box_obj_array = convert_to_box_objs(pred_box_array)
-    
-    nms_iou_threshold = 0.2
-    
-    g = geometry()    
-    #limits for pixels (size shape + 1)
-    
-    
-    picked_box_objs, picked_scores = filter_pred(pred_image, g.o_xaxis, g.o_yaxis, cls_threshold, nms_iou_threshold)
-    picked_box_objs2, picked_scores2 = filter_pred(pred_image2, g.o_xaxis, g.o_yaxis, cls_threshold, nms_iou_threshold)
-    
-
-    pstr = make_prediction_string(picked_box_objs)
-    
-    out_map = g.reconstruct_output_map(pstr)
-    
-
-    fig,ax = plt.subplots(figsize = (6,3))
-    ax.pcolormesh(g.o_xaxis_lim, g.o_yaxis_lim, pred_image2[:,:,-1].T)
-    plot_boxes(picked_box_objs2, ax = ax)
-    
-    fig,ax = plt.subplots(figsize = (6,3))
-    ax.pcolormesh(g.o_xaxis_lim, g.o_yaxis_lim, pred_image[:,:,-1].T)
-    plot_boxes(picked_box_objs, ax = ax)
-    
-    fig,ax = plt.subplots(figsize = (6,3))
-    ax.pcolormesh(g.o_xaxis_lim, g.o_yaxis_lim, pred_image2[:,:,-1].T)
-    plot_boxes(picked_box_objs, ax = ax)
     
 #    
 #training: 

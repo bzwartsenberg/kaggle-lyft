@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 from pathlib import Path
+from shapely.geometry import Polygon,mapping
 
 # Load the SDK
 from lyft_dataset_sdk.lyftdataset import LyftDataset, LyftDatasetExplorer, Quaternion, view_points
@@ -156,3 +157,21 @@ def plot_output(generator, output_map, channel = 8, ax = None):
     ax.pcolormesh(generator.o_xaxis_lim, generator.o_yaxis_lim, output_map[:,:,channel].T)
     
     
+
+
+        
+    
+def plot_Rotated_box(ax, rotated_box):
+    
+    coords = np.array(mapping(rotated_box.base_poly)['coordinates'])[0]
+    
+    ax.plot(coords[:,0],coords[:,1])
+    
+    
+def plot_boxes(box_array, ax = None):
+    
+    if ax is None:
+        fig,ax = plt.subplots(figsize = (5,5))
+    
+    for box in box_array:
+        plot_Rotated_box(ax, box)    
