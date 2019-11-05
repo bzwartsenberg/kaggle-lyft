@@ -29,26 +29,6 @@ from keras.utils import Sequence
 import time
 
 
-class sparse_3D():
-    
-    def __init__(self, dense):
-        """Create along last axis"""
-        
-        self.shape = dense.shape
-        self.data = [csr_matrix(dense[:,:,i]) for i in range(dense.shape[2])]
-        
-        
-    def todense(self, arr = None):
-        
-        if arr is None:
-            arr = np.empty(self.shape)
-            
-        assert arr.shape == self.shape
-        
-        for i in range(self.shape[2]):
-            arr[:,:,i] = self.data[i].todense()
-        return arr
-
 
 class data_generator():
     
@@ -297,8 +277,8 @@ class data_generator():
         return sparse_3D(input_map)
     
     
-class keras_generator(Sequence):
-    'Generates data for Keras'
+class train_generator(Sequence):
+    'Generates data for train'
     
     def __init__(self, use_idx, generator, batch_size=4, shuffle=True, seed = None):
         'Initialization'
@@ -353,30 +333,29 @@ class keras_generator(Sequence):
 
         return X, y    
 
-class keras_generator_empty_y_map(Sequence):
+class evaulation_generator(Sequence):
     'Generates data for Keras'
     
-    def __init__(self, use_idx, generator, batch_size=4, shuffle=True, seed = None):
+    def __init__(self, use_idx, generator, batch_size=4):
         'Initialization'
         self.use_idx = use_idx
         self.gen = generator
         self.batch_size = batch_size
-        self.shuffle = shuffle
         
-        # set seed
-        np.random.seed(seed)
         
 
         self.on_epoch_end()
 
     def __len__(self):
         'Denotes the number of batches per epoch'
-        return int(np.floor(len(self.use_idx) / self.batch_size))
+        return int(np.ceil(len(self.use_idx) / self.batch_size))
 
     def __getitem__(self, index):
         'Generate one batch of data'
         # Generate indexes of the batch
-        idxs = self.shuffled_idx[index*self.batch_size:(index+1)*self.batch_size]
+        
+        #last batch is shorter in length
+        idxs = self.shuffled_idx[index*self.batch_size:max((index+1)*self.batch_size,self.use_idx.shape[0])]
 
 
         # Generate data
@@ -386,11 +365,9 @@ class keras_generator_empty_y_map(Sequence):
 
     def on_epoch_end(self):
         'Updates indexes after each epoch'
-        if self.shuffle:
-            self.shuffled_idx = np.random.permutation(self.use_idx)
-        else:
-            self.shuffled_idx = self.use_idx
-
+        pass
+    
+    
     def __data_generation(self, idxs):
         'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
         # Initialization
@@ -408,60 +385,3 @@ class keras_generator_empty_y_map(Sequence):
             y[i] = np.zeros(self.gen.o_shape)
         return X, y    
     
-   
-class keras_generator_from_sparse(Sequence):
-    'Generates data for Keras'
-    
-    def __init__(self, use_idx, X,y, batch_size=4, shuffle=True, seed = None):
-        'Initialization'
-        self.use_idx = use_idx
-        self.X = X
-        self.y = y
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        
-        # set seed
-        np.random.seed(seed)
-        
-
-        self.on_epoch_end()
-
-    def __len__(self):
-        'Denotes the number of batches per epoch'
-        return int(np.floor(len(self.use_idx) / self.batch_size))
-
-    def __getitem__(self, index):
-        'Generate one batch of data'
-        # Generate indexes of the batch
-        idxs = self.shuffled_idx[index*self.batch_size:(index+1)*self.batch_size]
-
-
-        # Generate data
-        out_X, out_y = self.__data_generation(idxs)
-
-        return out_X, out_y
-
-    def on_epoch_end(self):
-        'Updates indexes after each epoch'
-        if self.shuffle:
-            self.shuffled_idx = np.random.permutation(self.use_idx)
-        else:
-            self.shuffled_idx = self.use_idx
-
-    def __data_generation(self, idxs):
-        'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
-        # Initialization
-        
-        
-        out_X = np.empty((self.batch_size, *self.X[0].shape))
-        out_y = np.empty((self.batch_size, *self.y[0].shape))
-
-        # Generate data
-        for i, idx in enumerate(idxs):
-            # Store sample
-            out_X[i] = self.X[idx].todense()
-
-            # Store class
-            out_y[i] = self.y[idx].todense()
-
-        return out_X, out_y      
