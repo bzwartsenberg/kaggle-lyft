@@ -263,19 +263,7 @@ class data_generator():
     
         return output_map
     
-    
-    def get_sparse_output(self, i):
-        
-        output_map = self.get_output_map(self.train['Id'][i], self.train['PredictionString'][i])
-        
-        return sparse_3D(output_map)
-    
-    def get_sparse_input(self, i):
-        
-        input_map = self.get_lidar_BEV(self.train['Id'][i])
-        
-        return sparse_3D(input_map)
-    
+
     
 class train_generator(Sequence):
     'Generates data for train'

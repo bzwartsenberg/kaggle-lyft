@@ -12,8 +12,13 @@ from shapely.geometry import Polygon,mapping
 from util_funcs import decode_predictionstring,get_points_in_a_rotated_box
 import pandas as pd
 import matplotlib.pyplot as plt
+from data_generator import evaulation_generator
 
 from lyft_dataset_sdk.lyftdataset import Quaternion
+from lyft_dataset_sdk.eval.detection.mAP_evaluation import get_average_precisions
+
+from multiprocessing import Pool
+
 
 class RotatedBox():
     
@@ -90,6 +95,93 @@ class RotatedBox():
         return self.obj_num
 		
         
+
+class ValidationPostProcessor():
+
+    def __init__(self, model, data_generator, val_idx, 
+                 nms_iou_threshold=0.2, 
+                 cls_threshold=0.7,
+                 chunk_size=100):
+        
+        self.gen = data_generator
+        self.model = model
+        self.val_idx = val_idx
+        self.chunk_size=100
+		
+        self.nms_iou_threshold = nms_iou_threshold
+        self.cls_threshold = cls_threshold
+        
+        self.val_predictions = []
+
+		
+
+    def analyze_chunk(self, idx, workers=4):
+        
+        
+        chunk_gen = evaulation_generator(idx, self.gen, batch_size=4)
+        
+        pred_im = self.model.predict_generator(chunk_gen, multiprocessing=True, workers=workers)
+        
+        #list of lists
+        predictions_fox_idx = []
+        
+        def mapping_func(i):
+            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
+            predictions = box_objs_to_lyft_sdk_format(picked_box_objs, 
+                                                      picked_scores, 
+                                                      self.gen.lyftdata, 
+                                                      self.gen.train.iloc[idx[i]]['Id'])
+            
+            return predictions
+        
+        p = Pool(workers)
+        predictions_fox_idx = p.map(mapping_func, range(idx.shape[0]))
+        
+        return predictions_fox_idx
+    
+    
+    def make_predictions(self):
+        
+        num_chunks = np.ceil(self.val_idx.shape[0]/self.chunk_size)
+        
+        self.val_predictions = []
+        
+        for i in range(num_chunks):
+            idx = self.val_idx[i*self.chunk_size:max((i+1)*self.chunk_size, self.val_idx.shape[0])]
+            
+            self.val_predictions.append(self.analyze_chunk(idx))
+    
+    
+    def calculate_mAP(self, over_iou_thresh=0.1, over_class_names=None):
+        
+        if self.val_predictions == []:
+            print('Run "make_predictions" first')
+            
+        if over_class_names is None:
+            over_class_names = self.gen.inc_classes
+            
+        
+        if type(over_iou_thresh)!= list:
+            over_iou_thresh = list(over_iou_thresh)
+            
+        precs_over_iou = []
+        for iou in over_iou_thresh:
+            
+            precs = []
+        
+            for i,idx in enumerate(self.val_idx):
+                predictions_gt = prediction_string_to_prediction_dicts_gt(self.gen.train.iloc[idx]['PredictionString'], 
+                                                                      self.gen.train.iloc[idx]['Id'])
+        
+                prec = get_average_precisions(predictions_gt, self.val_predictions[i], over_class_names,iou)
+
+                precs.append(np.array(prec))
+            precs_over_iou.append(np.array(precs).mean(axis=0))
+            
+        
+        return np.array(over_iou_thresh),np.array(precs_over_iou)
+
+
 
 
 class PostProcessor():
@@ -294,8 +386,37 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num
             
     return predictions
     
-    
 
+def decode_predictionstring_gt(pred_str):
+    
+    if pred_str[-1] == ' ':
+        pred_str = pred_str[:-1]
+    
+    pred_ar = np.array(pred_str.split(' ')).reshape((-1,8))[:]
+    obj = pred_ar[:,-1]
+    pos = pred_ar[:,:-1]
+
+    pos = pos.astype('float32')
+    return pos, obj
+
+
+def prediction_string_to_prediction_dicts_gt(pred_str, Id):
+    
+    pos,obj = decode_predictionstring_gt(pred_str)
+    
+    predictions = []
+    
+    for i in range(pos.shape[0]):
+        predictions.append({
+                'sample_token' : Id,
+                'name' : obj[i],
+                'score' : 1.,
+                'translation' : pos[i,0:3],
+                'size' : pos[i,3:6],
+                'rotation' : [pos[i,6],0.,0.,1.],
+                })
+            
+    return predictions
     
     
 #    
