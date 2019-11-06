@@ -9,9 +9,7 @@ Created on Thu Oct 24 14:19:16 2019
 
 import numpy as np
 from shapely.geometry import Polygon,mapping
-from util_funcs import decode_predictionstring,get_points_in_a_rotated_box
 import pandas as pd
-import matplotlib.pyplot as plt
 from data_generator import evaulation_generator
 
 from lyft_dataset_sdk.lyftdataset import Quaternion
@@ -127,24 +125,33 @@ class PostProcessor():
         
         chunk_gen = evaulation_generator(idx, self.gen, batch_size=4)
         
-        pred_im = self.model.predict_generator(chunk_gen, multiprocessing=True, workers=workers)
+        print('Running NN')
+        pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
         
         #list of lists
         predictions_fox_idx = []
         
-        def mapping_func(i):
-            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
+    
+        print('Analyzing predictions ')
+        
+        for i in range(len(idx)):
+            if i % 10 == 0:
+                print(i)
+                
+            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, 
+                                                         self.gen.o_yaxis, 
+                                                         self.cls_threshold, 
+                                                         self.nms_iou_threshold)
             predictions = box_objs_to_lyft_sdk_format(picked_box_objs, 
-                                                      picked_scores, 
-                                                      self.gen.lyftdata, 
-                                                      self.gen.train.iloc[idx[i]]['Id'],
-                                                      self.gen.num_to_cat)
-            
-            return predictions
-        
-        p = Pool(workers)
-        predictions_fox_idx = p.map(mapping_func, range(idx.shape[0]))
-        
+                                              picked_scores, 
+                                              self.gen.lyftdata, 
+                                              self.gen.train.iloc[idx[i]]['Id'],
+                                              self.gen.num_to_cat)
+    
+
+
+            predictions_fox_idx.append(predictions)
+                
         return predictions_fox_idx
     
     def analyze_chunk_to_string(self, idx, workers=4):
@@ -152,21 +159,30 @@ class PostProcessor():
         
         chunk_gen = evaulation_generator(idx, self.gen, batch_size=4)
         
-        pred_im = self.model.predict_generator(chunk_gen, multiprocessing=True, workers=workers)
+        print('Running NN')
+        pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
         
         #list of lists
         predictions_fox_idx = []
         
-        def mapping_func(i):
-            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, self.gen.o_yaxis, self.cls_threshold, self.nms_iou_threshold)
-
+        print('Analyzing predictions ')        
+        for i in range(len(idx)):
+            if i % 10 == 0:
+                print(i)
+                
+                
+            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, 
+                                                         self.gen.o_yaxis, 
+                                                         self.cls_threshold, 
+                                                         self.nms_iou_threshold)
             if len(picked_box_objs) == 0:
-                return ''
+                predictions_fox_idx.append('')
             else:
-                return box_objs_to_str(picked_box_objs, picked_scores, self.gen.num_to_cat)
-        
-        p = Pool(workers)
-        predictions_fox_idx = p.map(mapping_func, range(idx.shape[0]))
+                predictions_fox_idx.append(box_objs_to_str(picked_box_objs, 
+                                                           picked_scores, 
+                                                           self.gen.num_to_cat, 
+                                                           self.gen.lyftdata, 
+                                                           self.gen.train.iloc[idx[i]]['Id']))        
         
         return predictions_fox_idx
     
@@ -174,25 +190,26 @@ class PostProcessor():
     
     def make_predictions(self):
         
-        num_chunks = np.ceil(self.use_idx.shape[0]/self.chunk_size)
+        num_chunks = int(np.ceil(self.use_idx.shape[0]/self.chunk_size))
+        
         
         self.evaluated_predictions = []
         
         for i in range(num_chunks):
-            idx = self.use_idx[i*self.chunk_size:max((i+1)*self.chunk_size, self.use_idx.shape[0])]
+            idx = self.use_idx[i*self.chunk_size:min((i+1)*self.chunk_size, self.use_idx.shape[0])]
             
-            self.evaluated_predictions.append(self.analyze_chunk(idx))
+            self.evaluated_predictions += self.analyze_chunk(idx)
             
     def make_predictions_to_string(self):
         
-        num_chunks = np.ceil(self.use_idx.shape[0]/self.chunk_size)
+        num_chunks = int(np.ceil(self.use_idx.shape[0]/self.chunk_size))
         
         self.evaluated_predictions_string = []
         
         for i in range(num_chunks):
-            idx = self.use_idx[i*self.chunk_size:max((i+1)*self.chunk_size, self.use_idx.shape[0])]
+            idx = self.use_idx[i*self.chunk_size:min((i+1)*self.chunk_size, self.use_idx.shape[0])]
             
-            self.evaluated_predictions_string.append(self.analyze_chunk_to_string(idx))
+            self.evaluated_predictions_string += self.analyze_chunk_to_string(idx)
 
     
     
@@ -238,7 +255,6 @@ class PostProcessor():
         df_out['PredictionString'] = pd.Series(self.evaluated_predictions_string)
         
         df_out.to_csv(save_path)
-
 
 
 
@@ -332,7 +348,7 @@ def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold):
         selected_box_idxs, box_obj_array = non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold)
         
         picked_box_objs = box_obj_array[selected_box_idxs]
-        picked_scores = pred_box_array[selected_box_idxs, -1]
+        picked_scores = cls_scores_array[selected_box_idxs]
         
         return picked_box_objs, picked_scores
 
@@ -373,14 +389,14 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num
                 'sample_token' : Id,
                 'name' : df['cat'][i],
                 'score' : df['score'][i],
-                'translation' : df[['x','y','z']][i],
-                'size' : df[['dy','dx','dz']][i],
+                'translation' : df[['x','y','z']].iloc[i],
+                'size' : df[['dy','dx','dz']].iloc[i],
                 'rotation' : [df['yaw'][i],0.,0.,1.],
                 })
             
     return predictions
 
-def box_objs_to_str(picked_box_objs, picked_scores, num_to_cat):
+def box_objs_to_str(picked_box_objs, picked_scores, num_to_cat, lyftdata, Id):
     """Convert a series of box objects and scores to a prediction string"""
     
     if len(picked_box_objs) == 0:
@@ -393,12 +409,25 @@ def box_objs_to_str(picked_box_objs, picked_scores, num_to_cat):
     df['cat'] = picked_objstrs
     df['score'] = picked_scores
     
+    
+    sample = lyftdata.get('sample', Id)
+    lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
+    ego_pose = lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
+    
+    qt = Quaternion(ego_pose["rotation"])
+    
+    df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
+
+    df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
+    
+    df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
+    
+    
+    
     cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
     
-    pred_str_list = ['{} {} {} {} {} {} {} {} {}'.format(*df.loc[i][cols]) for i in range(df.shape[0])]
+    return df.to_csv(header=False,index=False,columns=cols, sep=' ', line_terminator=' ')
     
-    return ' '.join(pred_str_list)
-
 
 
 def decode_predictionstring_gt(pred_str):

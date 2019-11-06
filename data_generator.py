@@ -343,7 +343,7 @@ class evaulation_generator(Sequence):
         # Generate indexes of the batch
         
         #last batch is shorter in length
-        idxs = self.shuffled_idx[index*self.batch_size:max((index+1)*self.batch_size,self.use_idx.shape[0])]
+        idxs = self.use_idx[index*self.batch_size:min((index+1)*self.batch_size,self.use_idx.shape[0])]
 
 
         # Generate data
