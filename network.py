@@ -261,7 +261,8 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
     
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, cls_weight = 10., reg_weight = 5.):
+def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, 
+              cls_weight = 10., reg_weight = 5., optimizer = 'adam'):
     
     
     inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)

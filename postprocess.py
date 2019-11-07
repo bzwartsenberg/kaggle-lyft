@@ -16,7 +16,7 @@ from lyft_dataset_sdk.lyftdataset import Quaternion
 from lyft_dataset_sdk.eval.detection.mAP_evaluation import get_average_precisions
 
 from multiprocessing import Pool
-
+from functools import partial
 
 class RotatedBox():
     
@@ -85,6 +85,9 @@ class RotatedBox():
         
         return self.intersect(box)/self.union(box)
     
+    def iou_2d(self, box):
+        return self.base_poly.intersection(box.base_poly).area/self.base_poly.union(box.base_poly).area
+    
     def get_array(self):
 	
         return np.array([self.x, self.y, self.z, self.dx, self.dy, self.dz, self.th])
@@ -132,25 +135,29 @@ class PostProcessor():
         predictions_fox_idx = []
         
     
-        print('Analyzing predictions ')
+        print('Analyzing predictions')
         
-        for i in range(len(idx)):
+        output_boxes_for_iterator = filter_pred(pred_im, 
+                                                self.gen.o_xaxis, 
+                                                self.gen.o_yaxis, 
+                                                self.cls_threshold, 
+                                                self.nms_iou_threshold, 
+                                                workers=workers)
+        
+        print('Converting to lyft type data')
+        
+        
+        for i,picked_box_objs in enumerate(output_boxes_for_iterator):
             if i % 10 == 0:
                 print(i)
-                
-            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, 
-                                                         self.gen.o_yaxis, 
-                                                         self.cls_threshold, 
-                                                         self.nms_iou_threshold)
-            predictions = box_objs_to_lyft_sdk_format(picked_box_objs, 
-                                              picked_scores, 
-                                              self.gen.lyftdata, 
-                                              self.gen.train.iloc[idx[i]]['Id'],
-                                              self.gen.num_to_cat)
-    
-
-
+#                
+            predictions = box_objs_to_lyft_sdk_format(picked_box_objs,
+                                        self.gen.lyftdata, 
+                                        self.gen.train.iloc[idx[i]]['Id'], 
+                                        self.gen.num_to_cat)
             predictions_fox_idx.append(predictions)
+
+
                 
         return predictions_fox_idx
     
@@ -163,23 +170,26 @@ class PostProcessor():
         pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
         
         #list of lists
+        
+        output_boxes_for_iterator = filter_pred(pred_im, 
+                                                self.gen.o_xaxis, 
+                                                self.gen.o_yaxis, 
+                                                self.cls_threshold, 
+                                                self.nms_iou_threshold, 
+                                                workers=workers)
+        
+        
         predictions_fox_idx = []
         
         print('Analyzing predictions ')        
-        for i in range(len(idx)):
+        for i,picked_box_objs in enumerate(output_boxes_for_iterator):
             if i % 10 == 0:
                 print(i)
                 
-                
-            picked_box_objs, picked_scores = filter_pred(pred_im[i], self.gen.o_xaxis, 
-                                                         self.gen.o_yaxis, 
-                                                         self.cls_threshold, 
-                                                         self.nms_iou_threshold)
             if len(picked_box_objs) == 0:
                 predictions_fox_idx.append('')
             else:
                 predictions_fox_idx.append(box_objs_to_str(picked_box_objs, 
-                                                           picked_scores, 
                                                            self.gen.num_to_cat, 
                                                            self.gen.lyftdata, 
                                                            self.gen.train.iloc[idx[i]]['Id']))        
@@ -259,6 +269,7 @@ class PostProcessor():
 
 
 
+
 def convert_to_box_objs(pred_array,cls_pred_array,cls_scores_array):
     """
     Args:
@@ -280,9 +291,8 @@ def compute_ious(rot_box, with_rot_boxes):
 
     ious = np.zeros(with_rot_boxes.shape[0])
     for i in range(with_rot_boxes.shape[0]):
-        ious[i] = rot_box.iou(with_rot_boxes[i])
+        ious[i] = rot_box.iou_2d(with_rot_boxes[i])
     return ious
-
 
 
 
@@ -318,42 +328,113 @@ def non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_
         ixs = np.delete(ixs, remove_ixs)
         ixs = np.delete(ixs, 0)
 
-    return np.array(picks, dtype=np.int32),box_obj_array
+    picks = np.array(picks, dtype=np.int32)
+    return box_obj_array[picks]
 
-def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold):
+def compute_iou(rot_box, with_rot_box):
+    return rot_box.iou_2d(with_rot_box)
+
+
+vectorized_iou = np.vectorize(compute_iou, otypes=[float])
+
+
+def non_max_suppression_vector(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold):
+    ##Faster hopefully
+    
+    assert pred_box_array.shape[0] > 0
+    
+
+    box_obj_array = convert_to_box_objs(pred_box_array,cls_pred_array,cls_scores_array)
+    
+    scores = pred_box_array[:, -1]
+
+    # Get indicies of boxes sorted by scores (highest first)
+    
+    max_pred = 1e10
+    
+    max_pred = min(scores.shape[0], max_pred)
+    
+    ixs = scores.argsort()[::-1][:max_pred]
+    
+
+    picks = []
+    while ixs.size > 0:
+        # Pick top box and add its index to the list
+        i = ixs[0]
+        picks.append(i)
+        # Compute IoU of the picked box with the rest
+        iou = vectorized_iou(box_obj_array[i], box_obj_array[ixs[1:]])
+        # Identify boxes with IoU over the threshold. This
+        # returns indices into ixs[1:], so add 1 to get
+        # indices into ixs.
+        keep_ixs = np.where(iou <= nms_iou_threshold)[0] + 1
+        # Remove indices of the picked and overlapped boxes.
+        ixs = ixs[keep_ixs]
+
+    picks = np.array(picks, dtype=np.int32)
+    return box_obj_array[picks]
+
+
+def non_max_suppression_from_file(i):
+    
+    a = np.load('{}_a.npy'.format(i))
+    b = np.load('{}_b.npy'.format(i))
+    c = np.load('{}_c.npy'.format(i))
+    
+    
+    
+    return non_max_suppression(a,b,c, 0.2)
+
+
+def non_max_suppression_for_multi(args, nms_iou_threshold):
+    
+    if args is None:
+        return np.array([]),np.array([])
+    
+    pred_box_array,cls_pred_array,cls_scores_array = args
+    
+    return non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold)
+
+def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold, workers=4):
     #I should be able to improve this for batch type inference, at least the first type
-
-    if len(pred_image.shape) == 4:
-        pred_image = np.squeeze(pred_image, 0)
         
-    pred_image[:,:,0] += x_scale.reshape((-1,1))
-    pred_image[:,:,1] += y_scale.reshape((1,-1))
+    pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
+    pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
     
     #this predicts the indices
-    cls_pred = np.argmax(pred_image[:,:,8:], axis=2)
-    cls_scores = pred_image[:,:,8:].max(axis=2)
+    cls_pred = np.argmax(pred_image[:,:,:,8:], axis=3)
+    cls_scores = pred_image[:,:,:,8:].max(axis=3)
     
-    idx = np.argwhere(cls_scores > cls_threshold)
     
-    if idx.shape[0] == 0:#no boxes found
-        return np.array([]),np.array([])
+    def pred_iterator(pred_image, cls_pred, cls_scores):
+        for i in range(pred_image.shape[0]):
+            idx = np.argwhere(cls_scores[i] > cls_threshold)
+            if idx.shape[0] == 0:
+                yield None
+            else:
+                yield (pred_image[i,idx[:,0], idx[:,1],:8],cls_pred[i,idx[:,0], idx[:,1]], cls_scores[i,idx[:,0],idx[:,1]])
+    
+    chunksize = int(np.ceil(pred_image.shape[0]/workers))
+    
+    
+    #alternatively: starmap directly on nms_...
+    with Pool(workers) as p:
+        output_boxes_for_iterator = p.imap(partial(non_max_suppression_for_multi, 
+                                       nms_iou_threshold=nms_iou_threshold),
+                                       pred_iterator(pred_image, cls_pred, cls_scores), chunksize=chunksize)
+        output_boxes_for_iterator = [b for b in output_boxes_for_iterator]
         
-    else:
-        #a (n_boxes,9) size array, (flattened and filtered by > cls_threshold of pred image)
-        pred_box_array = pred_image[idx[:,0], idx[:,1],:8]
-        cls_pred_array = cls_pred[idx[:,0], idx[:,1]]
-        cls_scores_array = cls_scores[idx[:,0],idx[:,1]]
-            
-        #return numpy array of RotatedBox objects as well, so they can use a method to convert to string
-        selected_box_idxs, box_obj_array = non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold)
-        
-        picked_box_objs = box_obj_array[selected_box_idxs]
-        picked_scores = cls_scores_array[selected_box_idxs]
-        
-        return picked_box_objs, picked_scores
+#    output_boxes_for_iterator = []
+#    for arg in pred_iterator(pred_image, cls_pred, cls_scores):
+#        
+#        output_boxes_for_iterator.append(non_max_suppression_for_multi(arg, 0.2))
 
 
-def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num_to_cat):
+
+    return output_boxes_for_iterator
+
+
+def box_objs_to_lyft_sdk_format(picked_box_objs,lyftdata, Id, num_to_cat):
         
     predictions = []
     
@@ -362,7 +443,7 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num
     
     picked_objstrs = np.array([num_to_cat[obj.get_obj()] for obj in picked_box_objs])
     picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
-    
+    picked_scores = np.array([obj.score for obj in picked_box_objs])
     df = pd.DataFrame(picked_pos_array)
     df.columns = ['x','y','z','dy','dx','dz','yaw']
     df['cat'] = picked_objstrs
@@ -396,13 +477,14 @@ def box_objs_to_lyft_sdk_format(picked_box_objs, picked_scores,lyftdata, Id, num
             
     return predictions
 
-def box_objs_to_str(picked_box_objs, picked_scores, num_to_cat, lyftdata, Id):
+def box_objs_to_str(picked_box_objs, num_to_cat, lyftdata, Id):
     """Convert a series of box objects and scores to a prediction string"""
     
     if len(picked_box_objs) == 0:
         return ''
     picked_objstrs = np.array([num_to_cat[obj.get_obj()] for obj in picked_box_objs])
     picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
+    picked_scores = np.array([obj.score for obj in picked_box_objs])
     
     df = pd.DataFrame(picked_pos_array)
     df.columns = ['x','y','z','dy','dx','dz','yaw']
@@ -461,7 +543,65 @@ def prediction_string_to_prediction_dicts_gt(pred_str, Id):
             
     return predictions
     
+if __name__=='__main__':
     
+    pred_image = np.load('/Users/berend/Google Drive/colab_files/pred_im.npy')
+    xlim = (-102.4,102.4)
+    ylim = (-51.2,51.2)
+    
+    x_scale = np.linspace(-102,102, 256)
+    y_scale = np.linspace(-50.8,50.8, 128)
+    
+    
+    cls_threshold = 0.7
+    nms_iou_threshold = 0.2
+    workers = 1
+    import os
+    os.environ["OMP_NUM_THREADS"] = "1"
+    
+    pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
+    pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
+    
+    #this predicts the indices
+    cls_pred = np.argmax(pred_image[:,:,:,8:], axis=3)
+    cls_scores = pred_image[:,:,:,8:].max(axis=3)
+    
+    
+    def pred_iterator(pred_image, cls_pred, cls_scores):
+        for i in range(pred_image.shape[0]):
+            idx = np.argwhere(cls_scores[i] > cls_threshold)
+            if idx.shape[0] == 0:
+                yield None
+            else:
+                yield (pred_image[i,idx[:,0], idx[:,1],:8],cls_pred[i,idx[:,0], idx[:,1]], cls_scores[i,idx[:,0],idx[:,1]])
+    
+    import time
+    t0 = time.time()
+    for i,args in enumerate(pred_iterator(pred_image, cls_pred, cls_scores)):
+        a,b,c = args
+        np.save('{}_a.npy'.format(i),a)
+        np.save('{}_b.npy'.format(i),b)
+        np.save('{}_c.npy'.format(i),c)    
+#    box_list = filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold, workers=4)
+    t1 = time.time()
+    print(t1-t0)
+    
+    for i in range(100):
+        a = np.load('{}_a.npy'.format(i))
+        b = np.load('{}_b.npy'.format(i))
+        c = np.load('{}_c.npy'.format(i))
+        print(a.max(),b.max(),c.max())
+    t2 = time.time()
+    print(t2-t1)
+    
+    t2 = time.time()
+    workers = 8
+    with Pool(workers) as p:
+        output = p.imap_unordered(non_max_suppression_from_file, range(100), chunksize=25)
+        output = [o for o in output]
+    t3 = time.time()
+    print(t3-t2)
+        
 #    
 #training: 
 #x- continue training the model

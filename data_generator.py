@@ -49,6 +49,8 @@ class data_generator():
         self.zlim = (0,3)
         self.delta_z = 0.5
         
+        self.normalize = True
+        
         #no intensity, so no extra channels
         #may want to have an extra channel for the roadmap that lyft provides
         self.shape = tuple(map(int, [(self.xlim[1]-self.xlim[0])/self.delta, (self.ylim[1]-self.ylim[0])/self.delta, (self.zlim[1]-self.zlim[0])/self.delta_z])) 
@@ -154,7 +156,8 @@ class data_generator():
                 except ValueError as e:
                     print('Ignored ', e)
                     
-                        
+        if self.normalize:
+            feature_map = np.log(1 + feature_map)/3
         #bin points:
         return feature_map
     
