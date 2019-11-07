@@ -16,17 +16,17 @@ import keras.backend as K
     
 
     
-def block_1(x, use_bn = False):
+def block_1(x, bn_level=0,use_bn = False):
     
     kernel_initializer = 'glorot_uniform'
     
     x = Conv2D(32, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)
-    if use_bn:
+    if use_bn and bn_level > -1:
         x = BatchNormalization(axis = -1)(x)
     x = ReLU()(x)
 
     x = Conv2D(32, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)
-    if use_bn:
+    if use_bn and bn_level > 1:
         x = BatchNormalization(axis = -1)(x)
     x = ReLU()(x)
 
@@ -34,14 +34,14 @@ def block_1(x, use_bn = False):
     
     
     
-def res_block(x, channels, downsample = False, expand_channels = 4, use_bn = False):
+def res_block(x, channels, downsample = False, expand_channels = 4,bn_level=0, use_bn = False):
     #residual:
     res = x
     kernel_initializer = 'glorot_uniform'
 
     #first convolution
     x = Conv2D(channels, kernel_size = (1,1), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)
-    if use_bn:
+    if use_bn and bn_level > -1:
         x = BatchNormalization(axis = -1)(x)
     x = ReLU()(x)
 
@@ -50,11 +50,11 @@ def res_block(x, channels, downsample = False, expand_channels = 4, use_bn = Fal
     if downsample:
         x = Conv2D(channels, kernel_size = (3,3), strides=(2,2), padding = 'same', kernel_initializer = kernel_initializer)(x)
         res = Conv2D(channels*expand_channels, kernel_size = (1,1), strides=(2,2), padding = 'same', kernel_initializer = kernel_initializer)(res)
-        if use_bn:
+        if use_bn and bn_level > 1:
             res = BatchNormalization(axis = -1)(res)
     else:
         x = Conv2D(channels, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)
-    if use_bn:
+    if use_bn and bn_level > 1:
         x = BatchNormalization(axis = -1)(x)
     x = ReLU()(x)
     
@@ -62,20 +62,20 @@ def res_block(x, channels, downsample = False, expand_channels = 4, use_bn = Fal
     
     #last convolution
     x = Conv2D(channels*expand_channels, kernel_size = (1,1), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)
-    if use_bn:
+    if use_bn and bn_level > 1:
         x = BatchNormalization(axis = -1)(x)
         
     #add the residual and return:
     return ReLU()(add([x,res]))  
 
 
-def make_block(x, res_blocks, channels, use_bn = False, expand_channels = 4):
+def make_block(x, res_blocks, channels, use_bn = False,bn_level=0, expand_channels = 4):
     
     #first res block:
-    x = res_block(x, channels, downsample = True, expand_channels = expand_channels, use_bn = use_bn)
+    x = res_block(x, channels, downsample = True, expand_channels = expand_channels,bn_level=bn_level, use_bn = use_bn)
 
     for i in range(1, res_blocks):
-        x = res_block(x, channels, downsample = False, expand_channels = expand_channels, use_bn = use_bn)
+        x = res_block(x, channels, downsample = False, expand_channels = expand_channels,bn_level=bn_level, use_bn = use_bn)
         
     return x
 
@@ -103,14 +103,14 @@ def latteral_and_output(c3, c4, c5):
 
 
 
-def make_backbone(x, num_res_per_block, channels_per_block, use_bn = False, expand_channels = 4):
+def make_backbone(x, num_res_per_block, channels_per_block, use_bn = False,bn_level=0, expand_channels = 4):
     
-    c1 = block_1(x, use_bn = use_bn)
+    c1 = block_1(x,bn_level=bn_level, use_bn = use_bn)
 
-    c2 = make_block(c1, num_res_per_block[0], channels_per_block[0], use_bn = use_bn, expand_channels = expand_channels)
-    c3 = make_block(c2, num_res_per_block[1], channels_per_block[1], use_bn = use_bn, expand_channels = expand_channels)
-    c4 = make_block(c3, num_res_per_block[2], channels_per_block[2], use_bn = use_bn, expand_channels = expand_channels)
-    c5 = make_block(c4, num_res_per_block[3], channels_per_block[3], use_bn = use_bn, expand_channels = expand_channels)
+    c2 = make_block(c1, num_res_per_block[0], channels_per_block[0], use_bn = use_bn,bn_level=bn_level, expand_channels = expand_channels)
+    c3 = make_block(c2, num_res_per_block[1], channels_per_block[1], use_bn = use_bn,bn_level=bn_level, expand_channels = expand_channels)
+    c4 = make_block(c3, num_res_per_block[2], channels_per_block[2], use_bn = use_bn,bn_level=bn_level, expand_channels = expand_channels)
+    c5 = make_block(c4, num_res_per_block[3], channels_per_block[3], use_bn = use_bn,bn_level=bn_level, expand_channels = expand_channels)
         
     p4 = latteral_and_output(c3,c4,c5)
 
@@ -142,32 +142,32 @@ def make_reg_head(x):
     
     return x
 
-def make_header(x, n_classes, use_bn = False):
+def make_header(x, n_classes, use_bn = False,bn_level=0):
 
     kernel_initializer = 'glorot_uniform'
     #1    
     x = Conv2D(96, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)    
-    if use_bn:
+    if use_bn and bn_level > 0:
         x = BatchNormalization(axis = -1)(x)
 
     #2    
     x = Conv2D(96, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)    
-    if use_bn:
+    if use_bn and bn_level > 0:
         x = BatchNormalization(axis = -1)(x)
         
     #3    
     x = Conv2D(96, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)    
-    if use_bn:
+    if use_bn and bn_level > 0:
         x = BatchNormalization(axis = -1)(x)
         
     #4    
     x = Conv2D(96, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)    
-    if use_bn:
+    if use_bn and bn_level > 0:
         x = BatchNormalization(axis = -1)(x)        
         
     #5
     x = Conv2D(96, kernel_size = (3,3), strides=(1,1), padding = 'same', kernel_initializer = kernel_initializer)(x)    
-    if use_bn:
+    if use_bn and bn_level > 0:
         x = BatchNormalization(axis = -1)(x) 
         
 
@@ -242,18 +242,18 @@ def get_loss(n_classes, cls_weight, reg_weight):
 
 
 
-def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
+def make_network(input_shape,n_classes, use_bn = False,bn_level=0, expand_channels = 4):
     
     inp = Input(shape = input_shape)
 
     p4 = make_backbone(inp,
                        [3, 6, 6, 3],
                        [24, 48, 64, 96],
-                       use_bn = use_bn,
+                       use_bn = use_bn,bn_level=bn_level,
                        expand_channels = expand_channels
                        )
     
-    reg, cls_pred = make_header(p4, n_classes, use_bn = use_bn)
+    reg, cls_pred = make_header(p4, n_classes, use_bn = use_bn,bn_level=bn_level)
     
     out = Concatenate(axis=-1)([reg,cls_pred])
     
@@ -261,11 +261,15 @@ def make_network(input_shape,n_classes, use_bn = False, expand_channels = 4):
     
     
     
-def get_model(input_shape,n_classes, use_bn = False, expand_channels = 4, 
+def get_model(input_shape,n_classes, use_bn = False,bn_level = 0, expand_channels = 4, 
               cls_weight = 10., reg_weight = 5., optimizer = 'adam'):
+    ##bn_level is the level:
+    # 0: only on the input of every resblock
+    # 1: input of resblock and output layers
+    # 2: all conv layers
     
     
-    inp, out = make_network(input_shape,n_classes, use_bn = use_bn, expand_channels = expand_channels)
+    inp, out = make_network(input_shape,n_classes, use_bn = use_bn,bn_level=bn_level, expand_channels = expand_channels)
     
     model = Model(inp,out)
     
