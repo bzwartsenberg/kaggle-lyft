@@ -26,13 +26,12 @@ from lyft_dataset_sdk.utils.geometry_utils import view_points, transform_matrix
 from scipy.sparse import csr_matrix
 
 from keras.utils import Sequence
-import time
 
 
 
 class data_generator():
     
-    def __init__(self, train, lyftdata):
+    def __init__(self, train, lyftdata, config = {}):
         """
         Args:
             train: train dataframe
@@ -43,13 +42,13 @@ class data_generator():
         self.lyftdata = lyftdata
         
         #params for input maps:
-        self.xlim = (-102.4,102.4)
-        self.ylim = (-51.2,51.2)
-        self.delta = 0.2
-        self.zlim = (0,3)
-        self.delta_z = 0.5
+        self.xlim = config['xlim'] if 'xlim' in config else (-102.4,102.4)
+        self.ylim = config['ylim'] if 'ylim' in config else  (-51.2,51.2)
+        self.delta = config['delta'] if 'delta' in config else  0.2
+        self.zlim = config['zlim'] if 'zlim' in config else  (0,3)
+        self.delta_z = config['delta_z'] if 'delta_z' in config else  0.5
         
-        self.normalize = True
+        self.normalize = config['normalize'] if 'normalize' in config else True
         
         #no intensity, so no extra channels
         #may want to have an extra channel for the roadmap that lyft provides
@@ -76,7 +75,7 @@ class data_generator():
                      'bicycle']
     
         #classes to use:
-        self.inc_classes = self.categories
+        self.inc_classes = config['inc_classes'] if 'inc_classes' in config else self.categories
         self.n_classes = len(self.inc_classes)
     
         #classmap:
@@ -85,7 +84,7 @@ class data_generator():
         self.num_to_cat = {v : k for k,v in self.cat_to_num.items()}
         
         #params for output maps:
-        self.output_scale = 4
+        self.output_scale = config['output_scale'] if 'output_scale' in config else 4
         self.o_delta = self.delta*self.output_scale
         
         #output features: x,y,z,dx,dy,dz,cos(th),sin(th),n_classes     
