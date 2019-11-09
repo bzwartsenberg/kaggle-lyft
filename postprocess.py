@@ -268,7 +268,7 @@ class PostProcessor():
             
         df_out['PredictionString'] = pd.Series(self.evaluated_predictions_string)
         
-        df_out.to_csv(save_path)
+        df_out.to_csv(save_path,index=False)
 
 
 
