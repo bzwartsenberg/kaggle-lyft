@@ -62,7 +62,7 @@ def run_train(lyftdata, train, config):
     val_idx = perm[int(train_split*gen.train.shape[0]):]
     
     train_gen = train_generator(train_idx, gen, batch_size=4, shuffle=True, seed = None)
-    val_gen = evaluation_generator(val_idx, gen, batch_size=4, shuffle=True, seed = None)    
+    val_gen = evaluation_generator(val_idx, gen, batch_size=4)    
     
     if load_path != '':
         model = load_model(load_path)
