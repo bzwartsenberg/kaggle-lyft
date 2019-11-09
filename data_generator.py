@@ -323,7 +323,7 @@ class train_generator(Sequence):
 
         return X, y    
 
-class evaulation_generator(Sequence):
+class evaluation_generator(Sequence):
     'Generates data for Keras'
     
     def __init__(self, use_idx, generator, batch_size=4):
@@ -363,8 +363,8 @@ class evaulation_generator(Sequence):
         # Initialization
         
         
-        X = np.empty((self.batch_size, *self.gen.shape))
-        y = np.empty((self.batch_size, *self.gen.o_shape))
+        X = np.empty((len(idxs), *self.gen.shape))
+        y = np.empty((len(idxs), *self.gen.o_shape))
 
         # Generate data
         for i, idx in enumerate(idxs):

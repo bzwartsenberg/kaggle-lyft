@@ -10,13 +10,14 @@ Created on Thu Oct 24 14:19:16 2019
 import numpy as np
 from shapely.geometry import Polygon,mapping
 import pandas as pd
-from data_generator import evaulation_generator
+from data_generator import evaluation_generator
 
 from lyft_dataset_sdk.lyftdataset import Quaternion
 from lyft_dataset_sdk.eval.detection.mAP_evaluation import get_average_precisions
 
 from multiprocessing import Pool
 from functools import partial
+import time
 
 class RotatedBox():
     
@@ -126,7 +127,7 @@ class PostProcessor():
     def analyze_chunk(self, idx, workers=4):
         
         
-        chunk_gen = evaulation_generator(idx, self.gen, batch_size=4)
+        chunk_gen = evaluation_generator(idx, self.gen, batch_size=4)
         
         print('Running NN')
         pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
@@ -164,12 +165,14 @@ class PostProcessor():
     def analyze_chunk_to_string(self, idx, workers=4):
         
         
-        chunk_gen = evaulation_generator(idx, self.gen, batch_size=4)
+        chunk_gen = evaluation_generator(idx, self.gen, batch_size=4)
         
         print('Running NN')
         pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
         
         #list of lists
+        
+        print(pred_im.shape[0])
         
         output_boxes_for_iterator = filter_pred(pred_im, 
                                                 self.gen.o_xaxis, 
@@ -183,8 +186,6 @@ class PostProcessor():
         
         print('Analyzing predictions ')        
         for i,picked_box_objs in enumerate(output_boxes_for_iterator):
-            if i % 10 == 0:
-                print(i)
                 
             if len(picked_box_objs) == 0:
                 predictions_fox_idx.append('')
@@ -210,16 +211,19 @@ class PostProcessor():
             
             self.evaluated_predictions += self.analyze_chunk(idx)
             
-    def make_predictions_to_string(self):
+    def make_predictions_to_string(self,workers=1):
         
         num_chunks = int(np.ceil(self.use_idx.shape[0]/self.chunk_size))
         
         self.evaluated_predictions_string = []
-        
+        t0 = time.time()
         for i in range(num_chunks):
             idx = self.use_idx[i*self.chunk_size:min((i+1)*self.chunk_size, self.use_idx.shape[0])]
             
-            self.evaluated_predictions_string += self.analyze_chunk_to_string(idx)
+            self.evaluated_predictions_string += self.analyze_chunk_to_string(idx,workers=workers)
+            dt = time.time() - t0
+            print('Iteration ',i+1,'out of ', num_chunks)
+            print('Time left, ', (num_chunks-i)*dt/(i+1))
 
     
     
@@ -389,7 +393,7 @@ def non_max_suppression_from_file(i):
 def non_max_suppression_for_multi(args, nms_iou_threshold):
     
     if args is None:
-        return np.array([]),np.array([])
+        return np.array([])
     
     pred_box_array,cls_pred_array,cls_scores_array = args
     
