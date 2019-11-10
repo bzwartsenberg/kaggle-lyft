@@ -221,7 +221,7 @@ class data_generator():
         obj_df = pd.Categorical(obj, categories = self.categories)
         df['cat'] = obj_df
         df['cat_num'] = obj_df.codes
-        df['yaw_cor'] = df['yaw'] - qt.angle
+        df['yaw_cor'] = df['yaw'] + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
     
         df['logdx'] = np.log(df['dx'])
         df['logdy'] = np.log(df['dy'])

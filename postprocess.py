@@ -342,6 +342,15 @@ def compute_iou(rot_box, with_rot_box):
 vectorized_iou = np.vectorize(compute_iou, otypes=[float])
 
 
+def nms_from_file(base_path, nms_iou_threshold):
+    pred_box = np.load(base_path + '_pred_box.npy')
+    cls_pred = np.load(base_path + '_pred_cls.npy')
+    cls_scores = np.load(base_path + '_cls_score.npy')
+
+    return non_max_suppression(pred_box,cls_pred,cls_scores, nms_iou_threshold)
+    
+
+
 def non_max_suppression_vector(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold):
     ##Faster hopefully
     
@@ -379,16 +388,6 @@ def non_max_suppression_vector(pred_box_array,cls_pred_array,cls_scores_array, n
     return box_obj_array[picks]
 
 
-def non_max_suppression_from_file(i):
-    
-    a = np.load('{}_a.npy'.format(i))
-    b = np.load('{}_b.npy'.format(i))
-    c = np.load('{}_c.npy'.format(i))
-    
-    
-    
-    return non_max_suppression(a,b,c, 0.2)
-
 
 def non_max_suppression_for_multi(args, nms_iou_threshold):
     
@@ -398,6 +397,40 @@ def non_max_suppression_for_multi(args, nms_iou_threshold):
     pred_box_array,cls_pred_array,cls_scores_array = args
     
     return non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold)
+
+def filter_pred_and_save(pred_image, x_scale, y_scale, cls_threshold, save_dir, Ids):
+    pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
+    pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
+    
+    cls_pred = np.argmax(pred_image[:,:,:,8:], axis=3)
+    cls_scores = pred_image[:,:,:,8:].max(axis=3)
+    
+    def pred_iterator(pred_image, cls_pred, cls_scores, Ids):
+        for i in range(pred_image.shape[0]):
+            idx = np.argwhere(cls_scores[i] > cls_threshold)
+            if idx.shape[0] == 0:
+                yield (np.array([]),np.array([]),np.array([]),Ids[i])
+            else:
+                yield (pred_image[i,idx[:,0], idx[:,1],:8],cls_pred[i,idx[:,0], idx[:,1]], cls_scores[i,idx[:,0],idx[:,1]], Ids[i])
+    
+    if not save_dir[-1] == '/':
+        save_dir += '/'
+    
+    for pred_box, cls_pred, cls_score, Id in pred_iterator(pred_image, cls_pred, cls_scores):
+        np.save(save_dir + Id + '_pred_box.npy', pred_box)
+        np.save(save_dir + Id + '_pred_cls.npy', cls_pred)
+        np.save(save_dir + Id + '_cls_score.npy', cls_scores)
+    
+    
+def nms_to_str_from_save(save_dir, Ids, nms_iou_threshold, workers):
+
+    #
+    def path_iterator(Ids, save_dir):
+        for Id in Ids:
+            yield save_dir + Id
+    
+    nms_from_file()
+    
 
 def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold, workers=4):
     #I should be able to improve this for batch type inference, at least the first type
@@ -466,7 +499,8 @@ def box_objs_to_lyft_sdk_format(picked_box_objs,lyftdata, Id, num_to_cat):
 
     df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
     
-    df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
+    ##This should be right, qt is already inverse inverse (i.e. normal), so still subtract the angle.
+    df['yaw'] = df['yaw'] + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
     
     
     for i in range(df.shape[0]):
@@ -506,7 +540,8 @@ def box_objs_to_str(picked_box_objs, num_to_cat, lyftdata, Id):
 
     df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
     
-    df['yaw'] = df['yaw'] - qt.angle ##check this!! the data_preprocessing was -, with "inverse", I think you change only one of the two		
+    ##This should be right, qt is already inverse inverse (i.e. normal), so still subtract the angle.
+    df['yaw'] = df['yaw'] + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
     
     
     
@@ -605,7 +640,15 @@ if __name__=='__main__':
         output = [o for o in output]
     t3 = time.time()
     print(t3-t2)
-        
+     
+    
+#To change:
+    # check wether the angle in qt.angle is clockwise or counterclockwise (the axis can be negative)
+    #  -> in train map making (output_map)
+    #  -> in postprocessing
+    # make code to do rotation corrections before nms suppression, otherwise it returns the wrong thing
+    
+    
 #    
 #training: 
 #x- continue training the model
