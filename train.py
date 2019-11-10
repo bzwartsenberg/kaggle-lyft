@@ -108,7 +108,7 @@ class SaveCheckPoints(Callback):
         self.path = path
         self.frequency = frequency
         
-    def on_epoch_end(self):
+    def on_epoch_end(self, epoch, logs={}):
         self.i = 0
         self.j += 1
         self.model.save(self.path + '_{}_final.h5'.format(self.j))
@@ -116,6 +116,7 @@ class SaveCheckPoints(Callback):
     def on_batch_end(self, batch, logs={}):
         if (self.i != 0) and (self.i % self.frequency == 0):
             self.model.save(self.path + '_{}_{}.h5'.format(self.j,self.i))
+        self.i += 1
         
         
 
