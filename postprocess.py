@@ -141,7 +141,7 @@ class PostProcessor():
 
     
     
-    def make_predictions(self, save_dir, gen_workers = 4, nms_workers = 4):
+    def make_predictions(self, save_dir, gen_workers = 4, nms_workers = 4, save_only = True):
         
         num_chunks = int(np.ceil(self.use_idx.shape[0]/self.chunk_size))
         
@@ -150,11 +150,12 @@ class PostProcessor():
             idx = self.use_idx[i*self.chunk_size:min((i+1)*self.chunk_size, self.use_idx.shape[0])]
             self.analyze_chunk(idx, save_dir, workers = gen_workers)
             
-        print('Running nms suppression')        
-        self.evaluated_predictions = nms_from_save(save_dir, 
-                                                   self.gen.train['Id'], 
-                                                   self.nms_iou_threshold, 
-                                                   workers = nms_workers)
+        if not save_only:
+            print('Running nms suppression')        
+            self.evaluated_predictions = nms_from_save(save_dir, 
+                                                       self.gen.train['Id'], 
+                                                       self.nms_iou_threshold, 
+                                                       workers = nms_workers)
 
             
 
@@ -198,8 +199,9 @@ class PostProcessor():
         if self.evaluated_predictions == []:
             print('Run "make_predictions" first')
             
-        for i in range(df_out.shape[0]):
-            df_out.iloc[i]['PredictionString'] = box_objs_to_str(self.evaluated_predictions[i], self.gen.num_to_cat)  
+        pred_strs = [box_objs_to_str(self.evaluated_predictions[i], self.gen.num_to_cat) for i in range(df_out.shape[0])]
+        
+        df_out['PredictionString'] = pd.Series(pred_strs)
         
         df_out.to_csv(save_path,index=False)
         
@@ -250,7 +252,7 @@ def compute_ious(rot_box, with_rot_boxes):
 def non_max_suppression(boxes,cls_pred, nms_iou_threshold):
 
     if boxes.shape[0] == 0:
-        return
+        return np.array([])
     
 
     box_obj_array = convert_to_box_objs(boxes, cls_pred)
@@ -287,6 +289,8 @@ def compute_iou(rot_box, with_rot_box):
 
 
 def nms_from_file(base_path, nms_iou_threshold):
+    if base_path[-1] == 'a':
+        print(base_path)
     boxes = np.load(base_path + '_boxes.npy')
     cls_pred = np.load(base_path + '_cls.npy')
 
@@ -302,6 +306,7 @@ def filter_pred_and_save(pred_image, x_scale, y_scale, lyftdata, cls_threshold, 
     cls_scores = pred_image[:,:,:,8:].max(axis=3)
     
     def pred_iterator(pred_image, cls_pred, cls_scores, Ids):
+        Ids = list(Ids)
         for i in range(pred_image.shape[0]):
             idx = np.argwhere(cls_scores[i] > cls_threshold)
             if idx.shape[0] == 0:
@@ -342,8 +347,6 @@ def nms_from_save(save_dir, Ids, nms_iou_threshold, workers):
     #
     def path_iterator(Ids, save_dir):
         for i,Id in enumerate(Ids):
-            if i%100 == 0:
-                print(i)
             yield save_dir + Id
     
     with Pool(workers) as p:
@@ -392,6 +395,7 @@ def box_objs_to_str(picked_box_objs, num_to_cat):
     
     if len(picked_box_objs) == 0:
         return ''
+    
     picked_objstrs = np.array([num_to_cat[obj.get_obj()] for obj in picked_box_objs])
     picked_pos_array = np.array([obj.get_array() for obj in picked_box_objs])
     picked_scores = np.array([obj.score for obj in picked_box_objs])
