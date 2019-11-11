@@ -305,9 +305,10 @@ def filter_pred_and_save(pred_image, x_scale, y_scale, lyftdata, cls_threshold, 
         for i in range(pred_image.shape[0]):
             idx = np.argwhere(cls_scores[i] > cls_threshold)
             if idx.shape[0] == 0:
-                yield (np.array([]),np.array([]),Ids[i])
-            
-                sample = lyftdata.get('sample', Id)
+                yield (np.array([]),np.array([]),Ids[i])                
+
+            else:
+                sample = lyftdata.get('sample', Ids[i])
                 lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
                 ego_pose = lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
                 
@@ -315,24 +316,24 @@ def filter_pred_and_save(pred_image, x_scale, y_scale, lyftdata, cls_threshold, 
                 
                 boxes = np.zeros((len(idx), 8))
                 
+                boxes[:,0] = cls_scores[i, idx[:,0], idx[:,1]]
+                
                 #rotate and shift
-                boxes[:,0] = np.dot(qt.rotation_matrix,pred_image[i,idx[:,0], idx[:,1],:3].T).T + np.array(ego_pose["translation"]).reshape((1,-1))
+                boxes[:,1:4] = np.dot(qt.rotation_matrix,pred_image[i,idx[:,0], idx[:,1],:3].T).T + np.array(ego_pose["translation"]).reshape((1,-1))
                 
                 #dy, dz, dx
-                boxes[:,1:4] = np.exp(pred_image[i,idx[:,0], idx[:,1],0:3])
+                boxes[:,4:7] = np.exp(pred_image[i,idx[:,0], idx[:,1],3:6])
                 
                 #angle: 
                 boxes[:,7] = np.arctan2(pred_image[i,idx[:,0], idx[:,1],7],pred_image[i,idx[:,0], idx[:,1],6]) + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
-    
-
-            else:
+                
                 yield (boxes,cls_pred[i,idx[:,0], idx[:,1]], Ids[i])
     
     if not save_dir[-1] == '/':
         save_dir += '/'
     
-    for pred_box, cls_pred, cls_score, Id in pred_iterator(pred_image, cls_pred, cls_scores):
-        np.save(save_dir + Id + '_boxes.npy', pred_box)
+    for boxes, cls_pred, Id in pred_iterator(pred_image, cls_pred, cls_scores, Ids):
+        np.save(save_dir + Id + '_boxes.npy', boxes)
         np.save(save_dir + Id + '_cls.npy', cls_pred)
     
     
@@ -439,6 +440,7 @@ def prediction_string_to_prediction_dicts_gt(pred_str, Id):
     return predictions
     
 if __name__=='__main__':
+    pass
     
 #    pred_image = np.load('/Users/berend/Google Drive/colab_files/pred_im.npy')
 #    xlim = (-102.4,102.4)
