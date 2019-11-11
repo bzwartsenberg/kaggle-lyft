@@ -129,7 +129,7 @@ class PostProcessor():
         chunk_gen = evaluation_generator(idx, self.gen, batch_size=4)
         
         print('Running NN')
-        pred_image = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
+        pred_image = self.model.predict_generator(chunk_gen, use_multiprocessing=False, workers=workers)
         
         Ids = self.gen.train.iloc[idx]['Id']
         
