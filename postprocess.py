@@ -91,7 +91,7 @@ class RotatedBox():
     
     def get_array(self):
 	
-        return np.array([self.x, self.y, self.z, self.dx, self.dy, self.dz, self.th])
+        return np.array([self.x, self.y, self.z, self.dy, self.dx, self.dz, self.th])
 		
     def get_obj(self):
         return self.obj_num
@@ -124,106 +124,39 @@ class PostProcessor():
 
 		
 
-    def analyze_chunk(self, idx, workers=4):
-        
-        
-        chunk_gen = evaluation_generator(idx, self.gen, batch_size=4)
-        
-        print('Running NN')
-        pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
-        
-        #list of lists
-        predictions_fox_idx = []
-        
-    
-        print('Analyzing predictions')
-        
-        output_boxes_for_iterator = filter_pred(pred_im, 
-                                                self.gen.o_xaxis, 
-                                                self.gen.o_yaxis, 
-                                                self.cls_threshold, 
-                                                self.nms_iou_threshold, 
-                                                workers=workers)
-        
-        print('Converting to lyft type data')
-        
-        
-        for i,picked_box_objs in enumerate(output_boxes_for_iterator):
-            if i % 10 == 0:
-                print(i)
-#                
-            predictions = box_objs_to_lyft_sdk_format(picked_box_objs,
-                                        self.gen.lyftdata, 
-                                        self.gen.train.iloc[idx[i]]['Id'], 
-                                        self.gen.num_to_cat)
-            predictions_fox_idx.append(predictions)
-
-
-                
-        return predictions_fox_idx
-    
-    def analyze_chunk_to_string(self, idx, workers=4):
-        
+    def analyze_chunk(self, idx, save_dir, workers=4):
         
         chunk_gen = evaluation_generator(idx, self.gen, batch_size=4)
         
         print('Running NN')
-        pred_im = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
+        pred_image = self.model.predict_generator(chunk_gen, use_multiprocessing=True, workers=workers)
         
-        #list of lists
+        Ids = self.gen.train.iloc[idx]['Id']
         
-        print(pred_im.shape[0])
-        
-        output_boxes_for_iterator = filter_pred(pred_im, 
-                                                self.gen.o_xaxis, 
-                                                self.gen.o_yaxis, 
-                                                self.cls_threshold, 
-                                                self.nms_iou_threshold, 
-                                                workers=workers)
-        
-        
-        predictions_fox_idx = []
-        
-        print('Analyzing predictions ')        
-        for i,picked_box_objs in enumerate(output_boxes_for_iterator):
-                
-            if len(picked_box_objs) == 0:
-                predictions_fox_idx.append('')
-            else:
-                predictions_fox_idx.append(box_objs_to_str(picked_box_objs, 
-                                                           self.gen.num_to_cat, 
-                                                           self.gen.lyftdata, 
-                                                           self.gen.train.iloc[idx[i]]['Id']))        
-        
-        return predictions_fox_idx
+        print('Writing to disk')
+        filter_pred_and_save(pred_image, 
+                             self.gen.o_xaxis, self.gen.o_yaxis, 
+                             self.gen.lyftdata, self.cls_threshold, 
+                             save_dir, Ids)        
+
     
     
-    
-    def make_predictions(self):
+    def make_predictions(self, save_dir, gen_workers = 4, nms_workers = 4):
         
         num_chunks = int(np.ceil(self.use_idx.shape[0]/self.chunk_size))
         
-        
-        self.evaluated_predictions = []
-        
+        print('Running predictions and saving')
         for i in range(num_chunks):
             idx = self.use_idx[i*self.chunk_size:min((i+1)*self.chunk_size, self.use_idx.shape[0])]
+            self.analyze_chunk(idx, save_dir, workers = gen_workers)
             
-            self.evaluated_predictions += self.analyze_chunk(idx)
+        print('Running nms suppression')        
+        self.evaluated_predictions = nms_from_save(save_dir, 
+                                                   self.gen.train['Id'], 
+                                                   self.nms_iou_threshold, 
+                                                   workers = nms_workers)
+
             
-    def make_predictions_to_string(self,workers=1):
-        
-        num_chunks = int(np.ceil(self.use_idx.shape[0]/self.chunk_size))
-        
-        self.evaluated_predictions_string = []
-        t0 = time.time()
-        for i in range(num_chunks):
-            idx = self.use_idx[i*self.chunk_size:min((i+1)*self.chunk_size, self.use_idx.shape[0])]
-            
-            self.evaluated_predictions_string += self.analyze_chunk_to_string(idx,workers=workers)
-            dt = time.time() - t0
-            print('Iteration ',i+1,'out of ', num_chunks)
-            print('Time left, ', (num_chunks-i)*dt/(i+1))
 
     
     
@@ -262,31 +195,44 @@ class PostProcessor():
         #note: in this case "train" should be the test set!
         df_out = self.gen.train.copy()
         
-        
-        if self.evaluated_predictions_string == []:
-            print('Run "make_predictions_to_string" first')
+        if self.evaluated_predictions == []:
+            print('Run "make_predictions" first')
             
-        df_out['PredictionString'] = pd.Series(self.evaluated_predictions_string)
+        for i in range(df_out.shape[0]):
+            df_out.iloc[i]['PredictionString'] = box_objs_to_str(self.evaluated_predictions[i], self.gen.num_to_cat)  
         
         df_out.to_csv(save_path,index=False)
+        
+    def prediction_to_lyft_sdk(self):
+        """For use as a test set prediction tool"""
+        
+        #note: in this case "train" should be the test set!
+        df_out = self.gen.train.copy()
+        
+        if self.evaluated_predictions == []:
+            print('Run "make_predictions" first')
+        lyft_objects = []
+        for i in range(df_out.shape[0]):
+            lyft_objects.append(box_objs_to_lyft_sdk_format(self.evaluated_predictions[i], 
+                                                            self.gen.num_to_cat, 
+                                                            df_out.iloc[i]['Id']))
+        
+        return lyft_objects        
 
 
 
 
 
-def convert_to_box_objs(pred_array,cls_pred_array,cls_scores_array):
+def convert_to_box_objs(boxes, cls_pred):
     """
     Args:
-        pred_array: [N, (x,y,z,logdx,logdy,logdz,costh,sinth)]
+        pred_array: [N, (score,x,y,z,dy,dx,dz,yaw)]
     returns: 
         array of RotatedBox classes
     """
     
-    dxdydz = np.exp(pred_array[:,3:6])
-    th = np.arctan(pred_array[:,7]/pred_array[:,6])  #th = arctan(sin/cos)
 
-
-    rot_boxes = [RotatedBox(*pred_array[i,0:3], *dxdydz[i], th[i], cls_scores_array[i], cls_pred_array[i]) for i in range(pred_array.shape[0])]
+    rot_boxes = [RotatedBox(*boxes[i,1:8], boxes[i,0], cls_pred[i]) for i in range(boxes.shape[0])]
     
     return np.array(rot_boxes)
 
@@ -301,14 +247,15 @@ def compute_ious(rot_box, with_rot_boxes):
 
 
 
-def non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold):
+def non_max_suppression(boxes,cls_pred, nms_iou_threshold):
 
-    assert pred_box_array.shape[0] > 0
+    if boxes.shape[0] == 0:
+        return
     
 
-    box_obj_array = convert_to_box_objs(pred_box_array,cls_pred_array,cls_scores_array)
+    box_obj_array = convert_to_box_objs(boxes, cls_pred)
     
-    scores = pred_box_array[:, -1]
+    scores = np.array(boxes[:, 0])
 
     # Get indicies of boxes sorted by scores (highest first)
     
@@ -339,66 +286,15 @@ def compute_iou(rot_box, with_rot_box):
     return rot_box.iou_2d(with_rot_box)
 
 
-vectorized_iou = np.vectorize(compute_iou, otypes=[float])
-
-
 def nms_from_file(base_path, nms_iou_threshold):
-    pred_box = np.load(base_path + '_pred_box.npy')
-    cls_pred = np.load(base_path + '_pred_cls.npy')
-    cls_scores = np.load(base_path + '_cls_score.npy')
+    boxes = np.load(base_path + '_boxes.npy')
+    cls_pred = np.load(base_path + '_cls.npy')
 
-    return non_max_suppression(pred_box,cls_pred,cls_scores, nms_iou_threshold)
+    return non_max_suppression(boxes,cls_pred, nms_iou_threshold)
     
 
 
-def non_max_suppression_vector(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold):
-    ##Faster hopefully
-    
-    assert pred_box_array.shape[0] > 0
-    
-
-    box_obj_array = convert_to_box_objs(pred_box_array,cls_pred_array,cls_scores_array)
-    
-    scores = pred_box_array[:, -1]
-
-    # Get indicies of boxes sorted by scores (highest first)
-    
-    max_pred = 1e10
-    
-    max_pred = min(scores.shape[0], max_pred)
-    
-    ixs = scores.argsort()[::-1][:max_pred]
-    
-
-    picks = []
-    while ixs.size > 0:
-        # Pick top box and add its index to the list
-        i = ixs[0]
-        picks.append(i)
-        # Compute IoU of the picked box with the rest
-        iou = vectorized_iou(box_obj_array[i], box_obj_array[ixs[1:]])
-        # Identify boxes with IoU over the threshold. This
-        # returns indices into ixs[1:], so add 1 to get
-        # indices into ixs.
-        keep_ixs = np.where(iou <= nms_iou_threshold)[0] + 1
-        # Remove indices of the picked and overlapped boxes.
-        ixs = ixs[keep_ixs]
-
-    picks = np.array(picks, dtype=np.int32)
-    return box_obj_array[picks]
-
-
-
-def non_max_suppression_for_multi(args, nms_iou_threshold):
-    
-    if args is None:
-        return np.array([])
-    
-    pred_box_array,cls_pred_array,cls_scores_array = args
-    
-    return non_max_suppression(pred_box_array,cls_pred_array,cls_scores_array, nms_iou_threshold)
-
-def filter_pred_and_save(pred_image, x_scale, y_scale, cls_threshold, save_dir, Ids):
+def filter_pred_and_save(pred_image, x_scale, y_scale, lyftdata, cls_threshold, save_dir, Ids):
     pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
     pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
     
@@ -409,69 +305,56 @@ def filter_pred_and_save(pred_image, x_scale, y_scale, cls_threshold, save_dir, 
         for i in range(pred_image.shape[0]):
             idx = np.argwhere(cls_scores[i] > cls_threshold)
             if idx.shape[0] == 0:
-                yield (np.array([]),np.array([]),np.array([]),Ids[i])
+                yield (np.array([]),np.array([]),Ids[i])
+            
+                sample = lyftdata.get('sample', Id)
+                lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
+                ego_pose = lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
+                
+                qt = Quaternion(ego_pose["rotation"])
+                
+                boxes = np.zeros((len(idx), 8))
+                
+                #rotate and shift
+                boxes[:,0] = np.dot(qt.rotation_matrix,pred_image[i,idx[:,0], idx[:,1],:3].T).T + np.array(ego_pose["translation"]).reshape((1,-1))
+                
+                #dy, dz, dx
+                boxes[:,1:4] = np.exp(pred_image[i,idx[:,0], idx[:,1],0:3])
+                
+                #angle: 
+                boxes[:,7] = np.arctan2(pred_image[i,idx[:,0], idx[:,1],7],pred_image[i,idx[:,0], idx[:,1],6]) + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
+    
+
             else:
-                yield (pred_image[i,idx[:,0], idx[:,1],:8],cls_pred[i,idx[:,0], idx[:,1]], cls_scores[i,idx[:,0],idx[:,1]], Ids[i])
+                yield (boxes,cls_pred[i,idx[:,0], idx[:,1]], Ids[i])
     
     if not save_dir[-1] == '/':
         save_dir += '/'
     
     for pred_box, cls_pred, cls_score, Id in pred_iterator(pred_image, cls_pred, cls_scores):
-        np.save(save_dir + Id + '_pred_box.npy', pred_box)
-        np.save(save_dir + Id + '_pred_cls.npy', cls_pred)
-        np.save(save_dir + Id + '_cls_score.npy', cls_scores)
+        np.save(save_dir + Id + '_boxes.npy', pred_box)
+        np.save(save_dir + Id + '_cls.npy', cls_pred)
     
     
-def nms_to_str_from_save(save_dir, Ids, nms_iou_threshold, workers):
+def nms_from_save(save_dir, Ids, nms_iou_threshold, workers):
 
     #
     def path_iterator(Ids, save_dir):
-        for Id in Ids:
+        for i,Id in enumerate(Ids):
+            if i%100 == 0:
+                print(i)
             yield save_dir + Id
     
-    nms_from_file()
-    
-
-def filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold, workers=4):
-    #I should be able to improve this for batch type inference, at least the first type
-        
-    pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
-    pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
-    
-    #this predicts the indices
-    cls_pred = np.argmax(pred_image[:,:,:,8:], axis=3)
-    cls_scores = pred_image[:,:,:,8:].max(axis=3)
-    
-    
-    def pred_iterator(pred_image, cls_pred, cls_scores):
-        for i in range(pred_image.shape[0]):
-            idx = np.argwhere(cls_scores[i] > cls_threshold)
-            if idx.shape[0] == 0:
-                yield None
-            else:
-                yield (pred_image[i,idx[:,0], idx[:,1],:8],cls_pred[i,idx[:,0], idx[:,1]], cls_scores[i,idx[:,0],idx[:,1]])
-    
-    chunksize = int(np.ceil(pred_image.shape[0]/workers))
-    
-    
-    #alternatively: starmap directly on nms_...
     with Pool(workers) as p:
-        output_boxes_for_iterator = p.imap(partial(non_max_suppression_for_multi, 
-                                       nms_iou_threshold=nms_iou_threshold),
-                                       pred_iterator(pred_image, cls_pred, cls_scores), chunksize=chunksize)
-        output_boxes_for_iterator = [b for b in output_boxes_for_iterator]
-        
-#    output_boxes_for_iterator = []
-#    for arg in pred_iterator(pred_image, cls_pred, cls_scores):
-#        
-#        output_boxes_for_iterator.append(non_max_suppression_for_multi(arg, 0.2))
+        picked_boxes = p.map(partial(nms_from_file, 
+                    nms_iou_threshold=nms_iou_threshold), path_iterator(Ids, save_dir))
+    
+    return picked_boxes
+    
 
 
 
-    return output_boxes_for_iterator
-
-
-def box_objs_to_lyft_sdk_format(picked_box_objs,lyftdata, Id, num_to_cat):
+def box_objs_to_lyft_sdk_format(picked_box_objs,num_to_cat, Id):
         
     predictions = []
     
@@ -489,18 +372,6 @@ def box_objs_to_lyft_sdk_format(picked_box_objs,lyftdata, Id, num_to_cat):
 
     #translate and rotate:
 
-    sample = lyftdata.get('sample', Id)
-    lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
-    ego_pose = lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
-    
-    qt = Quaternion(ego_pose["rotation"])
-    
-    df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
-
-    df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
-    
-    ##This should be right, qt is already inverse inverse (i.e. normal), so still subtract the angle.
-    df['yaw'] = df['yaw'] + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
     
     
     for i in range(df.shape[0]):
@@ -515,7 +386,7 @@ def box_objs_to_lyft_sdk_format(picked_box_objs,lyftdata, Id, num_to_cat):
             
     return predictions
 
-def box_objs_to_str(picked_box_objs, num_to_cat, lyftdata, Id):
+def box_objs_to_str(picked_box_objs, num_to_cat):
     """Convert a series of box objects and scores to a prediction string"""
     
     if len(picked_box_objs) == 0:
@@ -527,25 +398,10 @@ def box_objs_to_str(picked_box_objs, num_to_cat, lyftdata, Id):
     df = pd.DataFrame(picked_pos_array)
     df.columns = ['x','y','z','dy','dx','dz','yaw']
     df['cat'] = picked_objstrs
-    df['score'] = picked_scores
+    df['score'] = picked_scores    
     
     
-    sample = lyftdata.get('sample', Id)
-    lidar_top = lyftdata.get('sample_data', sample['data']['LIDAR_TOP']) 
-    ego_pose = lyftdata.get('ego_pose',lidar_top['ego_pose_token'])
-    
-    qt = Quaternion(ego_pose["rotation"])
-    
-    df[['x','y','z']] = np.dot(qt.rotation_matrix,df[['x','y','z']].T).T
-
-    df[['x','y','z']] = df[['x','y','z']] + np.array(ego_pose["translation"]).reshape((1,-1))
-    
-    ##This should be right, qt is already inverse inverse (i.e. normal), so still subtract the angle.
-    df['yaw'] = df['yaw'] + np.arctan2(qt.rotation_matrix[1,0],qt.rotation_matrix[0,0])
-    
-    
-    
-    cols = ['score','x','y','z','dx','dy','dz','yaw','cat']
+    cols = ['score','x','y','z','dy','dx','dz','yaw','cat']
     
     return df.to_csv(header=False,index=False,columns=cols, sep=' ', line_terminator=' ')
     
@@ -584,103 +440,30 @@ def prediction_string_to_prediction_dicts_gt(pred_str, Id):
     
 if __name__=='__main__':
     
-    pred_image = np.load('/Users/berend/Google Drive/colab_files/pred_im.npy')
-    xlim = (-102.4,102.4)
-    ylim = (-51.2,51.2)
-    
-    x_scale = np.linspace(-102,102, 256)
-    y_scale = np.linspace(-50.8,50.8, 128)
-    
-    
-    cls_threshold = 0.7
-    nms_iou_threshold = 0.2
-    workers = 1
-    import os
-    os.environ["OMP_NUM_THREADS"] = "1"
-    
-    pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
-    pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
-    
-    #this predicts the indices
-    cls_pred = np.argmax(pred_image[:,:,:,8:], axis=3)
-    cls_scores = pred_image[:,:,:,8:].max(axis=3)
-    
-    
-    def pred_iterator(pred_image, cls_pred, cls_scores):
-        for i in range(pred_image.shape[0]):
-            idx = np.argwhere(cls_scores[i] > cls_threshold)
-            if idx.shape[0] == 0:
-                yield None
-            else:
-                yield (pred_image[i,idx[:,0], idx[:,1],:8],cls_pred[i,idx[:,0], idx[:,1]], cls_scores[i,idx[:,0],idx[:,1]])
-    
-    import time
-    t0 = time.time()
-    for i,args in enumerate(pred_iterator(pred_image, cls_pred, cls_scores)):
-        a,b,c = args
-        np.save('{}_a.npy'.format(i),a)
-        np.save('{}_b.npy'.format(i),b)
-        np.save('{}_c.npy'.format(i),c)    
-#    box_list = filter_pred(pred_image, x_scale, y_scale, cls_threshold, nms_iou_threshold, workers=4)
-    t1 = time.time()
-    print(t1-t0)
-    
-    for i in range(100):
-        a = np.load('{}_a.npy'.format(i))
-        b = np.load('{}_b.npy'.format(i))
-        c = np.load('{}_c.npy'.format(i))
-        print(a.max(),b.max(),c.max())
-    t2 = time.time()
-    print(t2-t1)
-    
-    t2 = time.time()
-    workers = 8
-    with Pool(workers) as p:
-        output = p.imap_unordered(non_max_suppression_from_file, range(100), chunksize=25)
-        output = [o for o in output]
-    t3 = time.time()
-    print(t3-t2)
-     
-    
-#To change:
-    # check wether the angle in qt.angle is clockwise or counterclockwise (the axis can be negative)
-    #  -> in train map making (output_map)
-    #  -> in postprocessing
-    # make code to do rotation corrections before nms suppression, otherwise it returns the wrong thing
-    
-    
+#    pred_image = np.load('/Users/berend/Google Drive/colab_files/pred_im.npy')
+#    xlim = (-102.4,102.4)
+#    ylim = (-51.2,51.2)
 #    
-#training: 
-#x- continue training the model
-#- train from checkpoint
-#x- remove al big code from colab, put in github and manage on gdrive
-#
-#postprocessing:
-#- correct angles and offsets for predictions
-#- clean up postprocessing pipeline
-#- 
-#
-#checking:
-#- make a plotter that plots prediction string with ground truth string
-#- make a calculator that calculates the mAP of ious as integrated in kaggle
-#- check optimal iou_threshold and cls_threshold
-#
-#submission
-#- translate prediction into string
-#- submit to kaggle
-#
-#
-#optimizing:
-#- make outputmap generator faster
+#    x_scale = np.linspace(-102,102, 256)
+#    y_scale = np.linspace(-50.8,50.8, 128)
 #    
-#integrate multiple classes:
-#- for predicting multiple classes: maybe have an 'object detected' output, that is used for threshold, then softmax for which class
-#- predict multple classes
+#    
+#    cls_threshold = 0.7
+#    nms_iou_threshold = 0.2
+#    workers = 1
+#    import os
+#    os.environ["OMP_NUM_THREADS"] = "1"
+#    
+#    pred_image[:,:,:,0] += x_scale.reshape((1,-1,1))
+#    pred_image[:,:,:,1] += y_scale.reshape((1,1,-1))
+#    
+#    #this predicts the indices
+#    cls_pred = np.argmax(pred_image[:,:,:,8:], axis=3)
+#    cls_scores = pred_image[:,:,:,8:].max(axis=3)
+#    
+#    
+#
 
-    
-    
-    
-    
     
     
     

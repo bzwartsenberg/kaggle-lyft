@@ -35,6 +35,7 @@ def run_train(lyftdata, train, config):
     train_split = config['train_split'] if 'train_split' in config else 0.9
     seed = config['seed'] if 'seed' in config else 0
     workers = config['workers'] if 'workers' in config else 1
+    use_multiprocessing = config['use_multiprocessing'] if 'use_multiprocessing' in config else False
     
     if not save_path[-1] == '/':
         save_path += '/'
@@ -46,7 +47,7 @@ def run_train(lyftdata, train, config):
         sub_path = '{:05d}/'.format(i)
         os.mkdir(save_path + sub_path)
         
-    save_path += save_name
+    save_path += (sub_path + save_name)
     
     
     histories = Histories()
@@ -85,7 +86,7 @@ def run_train(lyftdata, train, config):
     callbacks.append(lr_scheduler)
     callbacks.append(SaveCheckPoints(frequency = 1000, path = save_path))
         
-    hist = model.fit_generator(train_gen, epochs = epochs, use_multiprocessing = False, 
+    hist = model.fit_generator(train_gen, epochs = epochs, use_multiprocessing = use_multiprocessing, 
                         workers = workers, 
                         callbacks=callbacks,
                         validation_data = val_gen)
@@ -111,11 +112,11 @@ class SaveCheckPoints(Callback):
     def on_epoch_end(self, epoch, logs={}):
         self.i = 0
         self.j += 1
-        self.model.save(self.path + '_{}_final.h5'.format(self.j))
+        self.model.save(self.path + '_{}_final.h5'.format(self.j), include_optimizer = False)
         
     def on_batch_end(self, batch, logs={}):
         if (self.i != 0) and (self.i % self.frequency == 0):
-            self.model.save(self.path + '_{}_{}.h5'.format(self.j,self.i))
+            self.model.save(self.path + '_{}_{}.h5'.format(self.j,self.i), include_optimizer = False)
         self.i += 1
         
         
@@ -135,20 +136,12 @@ class Histories(Callback):
         self.reg_losses.append(logs.get('reg_loss_func'))
         self.cls_losses.append(logs.get('cls_loss_func'))
         
-    def on_epoch_end(self):
+    def on_epoch_end(self, epoch, logs={}):
         if self.save_path != '':
             np.save_txt(np.array(self.losses),self.save_path + 'losses.txt')
             np.save_txt(np.array(self.reg_losses),self.save_path + 'reg_losses.txt')
             np.save_txt(np.array(self.cls_losses),self.save_path + 'cls_losses.txt')
             
         
-        
-
-        
-#x make "saving" callback
-#x make a train script
-# figure out test/train lyftdata and symlinks
-#x figure out git key
-# make a "write_box_proposals" function
 
     
